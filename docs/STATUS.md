@@ -2,7 +2,7 @@
 
 Last updated 2026-11-08. If this file and any other document disagree, this one wins, and the other is a bug.
 
-**2026-11-08: open source.** The project is published under the AGPL-3.0 for people to run themselves, and billing, plans and Stripe were removed. The test counts below are from 2026-11-07, before that removal, and haven't been re-run since. A self-hosting stack was added (`compose.yaml`, `docs/self-hosting.md`): its configuration passes `docker compose config`, and it hasn't been run.
+**2026-11-08: open source.** The project is published under the AGPL-3.0 for people to run themselves, and billing, plans and Stripe were removed. After the removal, on 2026-11-08: `pnpm test` 1592 passed and 103 skipped (55 files run, 6 skipped), `pnpm typecheck` clean, and `pnpm test:e2e` 225 passed and 1 skipped. Counts further down that differ are from 2026-11-07. An operator-held root key (`AEGIS_ROOT_KEY`) was added as the default production root of trust, and production sign-up is by invitation after the first account (`AEGIS_SIGNUP`). A self-hosting stack was added (`compose.yaml`, `docs/self-hosting.md`): its configuration passes `docker compose config`, and it hasn't been run.
 
 **Summary.** A working product you can run locally today against synthetic mail, with all the real code paths. It has never connected to a real mailbox, because that needs accounts and credentials that weren't available. Before it holds real mail, its AWS KMS provider needs a run against a real key, and no external review has happened.
 
