@@ -1,0 +1,27 @@
+# A real MTA with one hosted domain and no way out: anything not for example.net bounces instead of leaving this container.
+compatibility_level = 3.6
+myhostname = localhost
+mydestination =
+mynetworks = 127.0.0.0/8
+inet_interfaces = all
+inet_protocols = ipv4
+maillog_file = /dev/stdout
+
+virtual_mailbox_domains = example.net
+virtual_mailbox_maps = texthash:/etc/mail-test/vmailbox
+virtual_transport = lmtp:unix:private/dovecot-lmtp
+default_transport = error:outbound delivery is disabled in this test server
+relay_transport = error:outbound delivery is disabled in this test server
+smtp_dns_support_level = disabled
+
+smtpd_tls_cert_file = /etc/mail-test/server.crt
+smtpd_tls_key_file = /etc/mail-test/server.key
+smtpd_tls_security_level = may
+smtpd_tls_auth_only = yes
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
+smtpd_sasl_auth_enable = yes
+smtpd_sender_login_maps = texthash:/etc/mail-test/logins
+smtpd_sender_restrictions = reject_authenticated_sender_login_mismatch
+smtpd_relay_restrictions = permit_sasl_authenticated, reject_unauth_destination
+smtpd_recipient_restrictions = permit_auth_destination, permit_sasl_authenticated, reject

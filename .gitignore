@@ -1,0 +1,26 @@
+node_modules/
+.next/
+dist/
+coverage/
+*.log
+.env
+.env.local
+.env.*.local
+.dev-keys/
+test-results/
+playwright-report/
+.DS_Store
+*.tsbuildinfo
+.next-e2e/
+.terraform/
+*.tfstate
+*.tfstate.*
+.next-e2e-identity/
+.next-*/
+test-results-*/
+
+.cache/
+# Archives of removed code, kept locally only.
+.removed/
+# Internal working brief. Kept locally, never published.
+ai_email_intelligence_security_master_prompt.md

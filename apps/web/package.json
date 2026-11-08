@@ -1,0 +1,42 @@
+{
+  "name": "@aegis/web",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@aegis/ai-core": "workspace:*",
+    "@aegis/domain": "workspace:*",
+    "@aegis/mail-adapters": "workspace:*",
+    "@aegis/mail-parser": "workspace:*",
+    "@aegis/platform": "workspace:*",
+    "@aegis/security-engine": "workspace:*",
+    "@react-three/fiber": "9.8.2",
+    "@simplewebauthn/browser": "^14.0.0",
+    "@tanstack/react-query": "^5.60.0",
+    "jose": "^6.0.0",
+    "lucide-react": "^1.0.0",
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "0.187.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.0",
+    "@playwright/test": "^1.60.0",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "0.187.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "~5.9.0"
+  }
+}

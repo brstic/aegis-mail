@@ -1,0 +1,19 @@
+{
+  "name": "@aegis/worker",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/main.ts",
+    "start": "tsx --env-file=../../.env src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aegis/platform": "workspace:*",
+    "tsx": "^4.20.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-trace-node": "^2.0.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.200.0"
+  }
+}

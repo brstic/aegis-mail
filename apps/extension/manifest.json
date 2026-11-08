@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Aegis Mail link check",
+  "version": "0.1.0",
+  "description": "Marks links in webmail that imitate well-known sites or don't go where they say. Runs on this device. Sends nothing anywhere.",
+  "permissions": [],
+  "host_permissions": [],
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*", "https://outlook.office.com/*", "https://outlook.live.com/*", "https://outlook.office365.com/*", "https://mail.yahoo.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

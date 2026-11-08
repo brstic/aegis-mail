@@ -1,0 +1,13 @@
+# Used by `gitleaks dir` and the CI action. Each allowance is a value that's public by design.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Not secrets"
+regexTarget = "line"
+regexes = [
+  # The demo-only root key in infra/docker/compose.yml. It's base64 of a sentence saying so, and it protects synthetic mail.
+  '''ZGVtby1vbmx5LWtleS1uZXZlci11c2UtZm9yLXJlYWw=''',
+  # An idempotency key in a test.
+  '''boundary-key-0001''',
+]

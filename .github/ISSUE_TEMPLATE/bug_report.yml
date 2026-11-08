@@ -1,0 +1,43 @@
+name: Bug report
+description: Something doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Security problems go to the Security tab, not here. Never paste real mail, addresses, tokens or passwords: use synthetic examples."
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations: { required: true }
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Steps, ideally in demo mode or with a synthetic message.
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The commit you're running (git rev-parse --short HEAD).
+    validations: { required: true }
+  - type: dropdown
+    id: setup
+    attributes:
+      label: How you run it
+      options: [Docker Compose (compose.yaml), Local demo (infra/docker/compose.yml), pnpm dev, Other]
+    validations: { required: true }
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Mailbox provider, if relevant
+      multiple: true
+      options: [Gmail, Microsoft 365 or Outlook, iCloud, Other IMAP, POP3, Not relevant]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The relevant lines from docker compose logs web worker. They carry no mail content, but check before pasting.
+      render: text

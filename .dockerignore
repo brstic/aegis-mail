@@ -1,0 +1,19 @@
+# Host node_modules hold macOS binaries, and would overwrite the image's.
+**/node_modules
+**/.next
+**/.next-*
+**/test-results*
+**/playwright-report
+**/*.tsbuildinfo
+.git
+.env
+.env.local
+.dev-keys
+coverage
+.cache
+# Archives of removed code, kept locally only.
+.removed/
+**/dist
+**/.terraform
+.env.*.local
+ai_email_intelligence_security_master_prompt.md

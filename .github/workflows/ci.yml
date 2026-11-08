@@ -1,0 +1,79 @@
+# Runs on every push to main and every pull request, forks included. It needs no secrets: only the read-only GITHUB_TOKEN.
+# It can also run locally with `act`.
+name: ci
+on: { push: { branches: [main] }, pull_request: {} }
+permissions: { contents: read }
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_HOST_AUTH_METHOD: trust }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres
+      DATABASE_URL: postgres://postgres@localhost:5432/aegis_dev
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # restore-drill.test.ts runs a real pg_dump, whose version can't be older than the server's.
+      - name: Postgres 17 client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-client-17
+          echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm eval
+      - run: pnpm --filter @aegis/web build
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: test
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_HOST_AUTH_METHOD: trust }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # playwright.config.ts connects with no user, which only works where the OS user is a Postgres role.
+      PGUSER: postgres
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @aegis/web exec playwright install --with-deps chromium
+      # Visual baselines are per platform and committed for macOS, so CI compares behaviour only.
+      - run: pnpm --filter @aegis/web exec playwright test --ignore-snapshots
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: pnpm/action-setup@v4
+      - run: pnpm audit --prod --audit-level high
+      # The gitleaks CLI rather than its action, which needs a paid license on organization accounts, including forks owned by one.
+      - name: Secret scan
+        env: { GITLEAKS_VERSION: 8.30.1, GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb }
+        run: |
+          curl -fsSLo gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks git . -c .gitleaks.toml --redact --no-banner
+      - uses: anchore/sbom-action@v0
+        with: { format: spdx-json, artifact-name: sbom.spdx.json }

@@ -1,0 +1,173 @@
+# Self-hosted Aegis Mail: PostgreSQL, clamd, a one-shot migration step, the web app and the worker.
+# Full guide: docs/self-hosting.md. Settings come from .env beside this file (start from infra/docker/selfhost.env.example).
+#   docker compose up -d --build
+# The web port is published on loopback only. Put a TLS-terminating reverse proxy in front of it: APP_ORIGIN must be https.
+# For a throwaway demo with synthetic mail on your own machine, use infra/docker/compose.yml instead.
+name: aegis-mail
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DEMO_MODE: "false"
+  APP_ORIGIN: ${APP_ORIGIN:?set APP_ORIGIN, e.g. https://mail.example.com}
+  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:?set WEBAUTHN_RP_ID to the host name of APP_ORIGIN}
+  # Root of trust: AEGIS_ROOT_KEY (the default), or AWS KMS instead. Web and worker refuse to boot with neither. See docs/self-hosting.md.
+  AEGIS_ROOT_KEY: ${AEGIS_ROOT_KEY:-}
+  AEGIS_ROOT_KEY_FILE: ${AEGIS_ROOT_KEY_FILE:-}
+  AWS_KMS_KEY_ID: ${AWS_KMS_KEY_ID:-}
+  AWS_REGION: ${AWS_REGION:-}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+  # Who can create an account: invite (the default: the first account, then invited addresses only) or open.
+  AEGIS_SIGNUP: ${AEGIS_SIGNUP:-invite}
+  # Optional server-wide limits per workspace. Empty means no limit. See docs/self-hosting.md.
+  AEGIS_LIMIT_ACCOUNTS: ${AEGIS_LIMIT_ACCOUNTS:-}
+  AEGIS_LIMIT_AI_ACTIONS_PER_MONTH: ${AEGIS_LIMIT_AI_ACTIONS_PER_MONTH:-}
+  AEGIS_LIMIT_AUTOMATIONS: ${AEGIS_LIMIT_AUTOMATIONS:-}
+  AEGIS_LIMIT_SEATS: ${AEGIS_LIMIT_SEATS:-}
+  AEGIS_LIMIT_INDEX_BYTES: ${AEGIS_LIMIT_INDEX_BYTES:-}
+  CLAMD_HOST: clamd
+  CLAMD_PORT: "3310"
+  TRANSACTIONAL_SMTP_URL: ${TRANSACTIONAL_SMTP_URL:-}
+  TRANSACTIONAL_FROM: ${TRANSACTIONAL_FROM:-}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GOOGLE_PUBSUB_TOPIC: ${GOOGLE_PUBSUB_TOPIC:-}
+  GOOGLE_PUBSUB_AUDIENCE: ${GOOGLE_PUBSUB_AUDIENCE:-}
+  GOOGLE_PUBSUB_SERVICE_ACCOUNT: ${GOOGLE_PUBSUB_SERVICE_ACCOUNT:-}
+  MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+  MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+  MICROSOFT_WEBHOOK_URL: ${MICROSOFT_WEBHOOK_URL:-}
+  SIGNIN_GOOGLE_CLIENT_ID: ${SIGNIN_GOOGLE_CLIENT_ID:-}
+  SIGNIN_GOOGLE_CLIENT_SECRET: ${SIGNIN_GOOGLE_CLIENT_SECRET:-}
+  SIGNIN_MICROSOFT_CLIENT_ID: ${SIGNIN_MICROSOFT_CLIENT_ID:-}
+  SIGNIN_MICROSOFT_CLIENT_SECRET: ${SIGNIN_MICROSOFT_CLIENT_SECRET:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  AEGIS_LLM_MODEL: ${AEGIS_LLM_MODEL:-}
+  AEGIS_LLM_BASE_URL: ${AEGIS_LLM_BASE_URL:-}
+  AEGIS_REGION: ${AEGIS_REGION:-}
+  AEGIS_EMBEDDINGS: ${AEGIS_EMBEDDINGS:-}
+  AEGIS_EMBEDDINGS_CACHE_DIR: /var/lib/aegis/models
+
+x-limits: &limits
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: 20m, max-file: "3" }
+
+x-worker-build: &worker-build
+  build: { context: ., dockerfile: infra/docker/Dockerfile, target: worker }
+  image: aegis-mail-worker
+
+services:
+  db:
+    <<: *limits
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: aegis
+    volumes: [dbdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -d, aegis]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  clamd:
+    <<: *limits
+    build: { context: ., dockerfile: infra/docker/Dockerfile, target: clamd }
+    image: aegis-mail-clamd
+    volumes: [clamdb:/var/lib/clamav]
+    healthcheck:
+      test: [CMD, clamdcheck.sh]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      # The first start downloads the signature database.
+      start_period: 300s
+
+  # Schema migrations. The only container with the database owner's credential. Exits when done, and is safe to run again.
+  migrate:
+    <<: *worker-build
+    command: [pnpm, db:migrate]
+    environment:
+      <<: *app-env
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?}@db:5432/aegis
+      AEGIS_PLATFORM_ADMINS: ${AEGIS_PLATFORM_ADMINS:-}
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+  # Web and worker log in as separate, non-superuser roles (migration 003). This creates them if needed and sets their passwords on
+  # every start. The restore login exists without the right to log in: enable it only for a restore (docs/runbooks/backup-restore.md).
+  logins:
+    image: postgres:17
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?}
+      WEB_PW: ${AEGIS_WEB_DB_PASSWORD:?set AEGIS_WEB_DB_PASSWORD}
+      WORKER_PW: ${AEGIS_WORKER_DB_PASSWORD:?set AEGIS_WORKER_DB_PASSWORD}
+    entrypoint: [sh, -c]
+    command:
+      - |
+        psql -v ON_ERROR_STOP=1 -h db -U postgres -d aegis -v web="$$WEB_PW" -v worker="$$WORKER_PW" <<'SQL'
+        SELECT 'CREATE ROLE aegis_web_login LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aegis_web_login') \gexec
+        SELECT 'CREATE ROLE aegis_worker_login LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aegis_worker_login') \gexec
+        SELECT 'CREATE ROLE aegis_restore_login NOLOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aegis_restore_login') \gexec
+        GRANT aegis_web_conn TO aegis_web_login;
+        GRANT aegis_worker_conn TO aegis_worker_login;
+        GRANT aegis_restore_conn TO aegis_restore_login;
+        ALTER ROLE aegis_web_login LOGIN PASSWORD :'web';
+        ALTER ROLE aegis_worker_login LOGIN PASSWORD :'worker';
+        SQL
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: "no"
+
+  # The images run as the unprivileged node user, and fresh volumes belong to root. This hands them over, once per start.
+  volumes-init:
+    <<: *worker-build
+    user: "0:0"
+    command: [chown, "1000:1000", /var/lib/aegis/deletion-log, /var/lib/aegis/models]
+    volumes:
+      - ${AEGIS_DELETION_LOG_DIR:-deletionlog}:/var/lib/aegis/deletion-log
+      - models:/var/lib/aegis/models
+    restart: "no"
+
+  web:
+    <<: *limits
+    build: { context: ., dockerfile: infra/docker/Dockerfile, target: web }
+    image: aegis-mail-web
+    environment:
+      <<: *app-env
+      DATABASE_URL_WEB: postgres://aegis_web_login:${AEGIS_WEB_DB_PASSWORD:?}@db:5432/aegis
+      AEGIS_MARKETING_SITE: ${AEGIS_MARKETING_SITE:-false}
+      AEGIS_METRICS_TOKEN: ${AEGIS_METRICS_TOKEN:-}
+    ports: ["${AEGIS_WEB_BIND:-127.0.0.1}:${AEGIS_WEB_PORT:-3000}:3000"]
+    volumes: [models:/var/lib/aegis/models]
+    depends_on:
+      logins: { condition: service_completed_successfully }
+      volumes-init: { condition: service_completed_successfully }
+      clamd: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3000/api/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  worker:
+    <<: [*limits, *worker-build]
+    environment:
+      <<: *app-env
+      DATABASE_URL_WORKER: postgres://aegis_worker_login:${AEGIS_WORKER_DB_PASSWORD:?}@db:5432/aegis
+      # Required outside demo mode. Put it on storage separate from the database: see docs/runbooks/backup-restore.md.
+      AEGIS_DELETION_LOG_PATH: /var/lib/aegis/deletion-log/deletions.jsonl
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    volumes:
+      - ${AEGIS_DELETION_LOG_DIR:-deletionlog}:/var/lib/aegis/deletion-log
+      - models:/var/lib/aegis/models
+    depends_on:
+      logins: { condition: service_completed_successfully }
+      volumes-init: { condition: service_completed_successfully }
+      clamd: { condition: service_healthy }
+
+volumes: { dbdata: {}, clamdb: {}, deletionlog: {}, models: {} }

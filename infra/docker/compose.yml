@@ -1,0 +1,59 @@
+# Local demo stack with synthetic mail. Demo mode only: never expose this. For real mail, use compose.yaml at the repository root. The database trusts every local
+# connection and the root key below is public, so only the web port is published, and only on loopback.
+#   docker compose -f infra/docker/compose.yml up --build
+name: aegis
+x-app-env: &env
+  DEMO_MODE: "true"
+  # Web and worker must share one root key. A container can't share .dev-keys/, and this one protects only demo data.
+  AEGIS_DEV_ROOT_KEY: ZGVtby1vbmx5LWtleS1uZXZlci11c2UtZm9yLXJlYWw=
+  APP_ORIGIN: http://localhost:${AEGIS_WEB_PORT:-3000}
+  WEBAUTHN_RP_ID: localhost
+  DATABASE_URL: postgres://postgres@db:5432/aegis_dev
+  DATABASE_URL_WEB: postgres://aegis_web_login@db:5432/aegis_dev
+  DATABASE_URL_WORKER: postgres://aegis_worker_login@db:5432/aegis_dev
+  CLAMD_HOST: clamd
+  CLAMD_PORT: "3310"
+services:
+  db:
+    image: postgres:17
+    environment: { POSTGRES_HOST_AUTH_METHOD: trust, POSTGRES_DB: aegis_dev }
+    volumes: [dbdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -d, aegis_dev]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  clamd:
+    build: { context: ../.., dockerfile: infra/docker/Dockerfile, target: clamd }
+    volumes: [clamdb:/var/lib/clamav]
+    healthcheck:
+      test: [CMD, clamdcheck.sh]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+  # Schema, the per-process logins (migration 003) and the demo workspace. Runs once, and is safe to run again.
+  migrate:
+    build: { context: ../.., dockerfile: infra/docker/Dockerfile, target: worker }
+    command: [sh, -c, "pnpm db:migrate && pnpm db:seed"]
+    environment: *env
+    depends_on:
+      db: { condition: service_healthy }
+      clamd: { condition: service_healthy }
+  web:
+    build: { context: ../.., dockerfile: infra/docker/Dockerfile, target: web }
+    environment: *env
+    ports: ["127.0.0.1:${AEGIS_WEB_PORT:-3000}:3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3000/api/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+  worker:
+    build: { context: ../.., dockerfile: infra/docker/Dockerfile, target: worker }
+    environment: *env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+volumes: { dbdata: {}, clamdb: {} }

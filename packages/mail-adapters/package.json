@@ -1,0 +1,26 @@
+{
+  "name": "@aegis/mail-adapters",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aegis/domain": "workspace:*",
+    "imapflow": "^2.0.0",
+    "nodemailer": "^10.0.0",
+    "oauth4webapi": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/smtp-server": "^3.5.13",
+    "hoodiecrow-imap": "3.3.1",
+    "selfsigned": "^5.5.0",
+    "smtp-server": "^3.21.3"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "name": "aegis-mail",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A self-hosted email client with phishing and attachment protection, Focus ranking, search, summaries and drafts.",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brstic/aegis-mail.git"
+  },
+  "homepage": "https://github.com/brstic/aegis-mail#readme",
+  "bugs": {
+    "url": "https://github.com/brstic/aegis-mail/issues"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -n web,worker -c blue,green \"pnpm --filter @aegis/web dev\" \"pnpm --filter @aegis/worker dev\"",
+    "build": "pnpm --filter @aegis/web build",
+    "start": "concurrently -n web,worker -c blue,green \"pnpm --filter @aegis/web start\" \"pnpm --filter @aegis/worker start\"",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "pnpm --filter @aegis/web test:e2e",
+    "db:create": "tsx packages/db/src/cli.ts create",
+    "db:migrate": "tsx packages/db/src/cli.ts migrate",
+    "db:reset": "tsx packages/db/src/cli.ts reset",
+    "db:seed": "tsx packages/platform/src/cli/seed.ts",
+    "operators": "tsx packages/platform/src/cli/operators.ts",
+    "restore:reapply": "tsx packages/platform/src/cli/restore-reapply.ts",
+    "eval": "tsx packages/security-engine/src/eval/cli.ts",
+    "train": "tsx packages/security-engine/src/classifier/train-cli.ts",
+    "eval:priority": "tsx packages/platform/src/cli/eval-priority.ts",
+    "bench": "tsx packages/platform/src/cli/bench.ts",
+    "openapi": "tsx apps/web/scripts/openapi.ts",
+    "bootstrap": "pnpm install && pnpm db:create && pnpm db:migrate && pnpm db:seed"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
+    "@types/pngjs": "^6.0.5",
+    "@types/sanitize-html": "^2.16.2",
+    "concurrently": "^9.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.0",
+    "vitest": "^5.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp",
+      "esbuild",
+      "@node-rs/argon2"
+    ],
+    "overrides": {
+      "joi": ">=18.3.1"
+    }
+  }
+}

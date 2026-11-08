@@ -1,0 +1,108 @@
+# A public demo site: demo mode with synthetic mail, on a server behind a TLS reverse proxy. Not a configuration for real mail:
+# for that, use compose.yaml at the repository root (docs/self-hosting.md). Demo mode has public logins and a public /dev/outbox,
+# so put a password gate (HTTP basic auth at the proxy) in front of everything except /.well-known.
+# Unlike compose.yml, this one is meant to sit behind a reverse proxy, so the root key is private, the database needs passwords, and the
+# web and worker processes never see the owner credential. Values come from a .env beside the project, made by infra/docker/staging-env.sh.
+#   docker compose -f infra/docker/compose.staging.yml --env-file .env up -d --build
+name: aegis-staging
+x-app-env: &env
+  DEMO_MODE: "true"
+  NODE_ENV: production
+  AEGIS_DEV_ROOT_KEY: ${AEGIS_DEV_ROOT_KEY:?}
+  APP_ORIGIN: https://${STAGING_HOST:?}
+  WEBAUTHN_RP_ID: ${STAGING_HOST:?}
+  CLAMD_HOST: clamd
+  CLAMD_PORT: "3310"
+  # A public demo shows the product site at /. Set false for a bare instance.
+  AEGIS_MARKETING_SITE: ${AEGIS_MARKETING_SITE:-true}
+x-limits: &limits
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: 20m, max-file: "3" }
+services:
+  db:
+    <<: *limits
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: aegis_staging
+    volumes: [dbdata:/var/lib/postgresql/data]
+    mem_limit: 2g
+    cpus: 4
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -d, aegis_staging]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  clamd:
+    <<: *limits
+    build: { context: ../.., dockerfile: infra/docker/Dockerfile, target: clamd }
+    volumes: [clamdb:/var/lib/clamav]
+    mem_limit: 3g
+    cpus: 2
+    healthcheck:
+      test: [CMD, clamdcheck.sh]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 180s
+  # The only container with the owner credential. It exits when it's done.
+  migrate:
+    build: { context: ../.., dockerfile: infra/docker/Dockerfile, target: worker }
+    image: aegis-staging-worker
+    command: [sh, -c, "pnpm db:migrate && pnpm db:seed"]
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?}@db:5432/aegis_staging
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+  # Migrations make these logins without passwords, which the image's scram rule won't accept. This gives them theirs, on every deploy.
+  logins:
+    image: postgres:17
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?}
+      WEB_PW: ${AEGIS_WEB_DB_PASSWORD:?}
+      WORKER_PW: ${AEGIS_WORKER_DB_PASSWORD:?}
+    entrypoint: [sh, -c]
+    command:
+      - |
+        psql -v ON_ERROR_STOP=1 -h db -U postgres -d aegis_staging -v web="$$WEB_PW" -v worker="$$WORKER_PW" <<'SQL'
+        ALTER ROLE aegis_web_login PASSWORD :'web';
+        ALTER ROLE aegis_worker_login PASSWORD :'worker';
+        ALTER ROLE aegis_restore_login NOLOGIN;
+        SQL
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: "no"
+  web:
+    <<: *limits
+    build: { context: ../.., dockerfile: infra/docker/Dockerfile, target: web }
+    image: aegis-staging-web
+    environment:
+      <<: *env
+      DATABASE_URL_WEB: postgres://aegis_web_login:${AEGIS_WEB_DB_PASSWORD:?}@db:5432/aegis_staging
+    ports: ["127.0.0.1:${AEGIS_WEB_PORT:?}:3000"]
+    mem_limit: 2g
+    cpus: 4
+    depends_on:
+      logins: { condition: service_completed_successfully }
+      clamd: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3000/api/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  worker:
+    <<: *limits
+    image: aegis-staging-worker
+    environment:
+      <<: *env
+      DATABASE_URL_WORKER: postgres://aegis_worker_login:${AEGIS_WORKER_DB_PASSWORD:?}@db:5432/aegis_staging
+    mem_limit: 2g
+    cpus: 4
+    depends_on:
+      logins: { condition: service_completed_successfully }
+      clamd: { condition: service_healthy }
+volumes: { dbdata: {}, clamdb: {} }
