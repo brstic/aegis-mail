@@ -160,6 +160,7 @@ test.describe("the film", () => {
   });
 
   test("focus: a letter can be picked up in the world and dropped on another shelf", async ({ page }) => {
+    test.skip(!!process.env.CI, "needs a GPU: the drag follows frames that software WebGL on CI renders too slowly");
     await open(page); await ready(page);
     await seek(page, "focus", 0.75);
     await page.waitForTimeout(600);

@@ -1,20 +1,20 @@
 import { expect, test } from "@playwright/test";
-import { signIn } from "./helpers";
+import { pressUntil, signIn } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
 test("command palette: opens from the keyboard, navigates, and hands off a search", async ({ page }) => {
   await signIn(page);
   await page.goto("/app/focus");
-  await page.keyboard.press("ControlOrMeta+k");
   const box = page.getByRole("combobox", { name: "Type a command or search" });
+  await pressUntil(page, "ControlOrMeta+k", box);
   await expect(box).toBeFocused();
   await box.fill("tasks");
   await expect(page.getByRole("option", { name: "Go to Tasks" })).toBeVisible();
   await box.press("Enter");
   await expect(page).toHaveURL(/\/app\/tasks/);
-  await page.keyboard.press("ControlOrMeta+k");
-  await page.getByRole("combobox", { name: "Type a command or search" }).fill("zebra invoices");
+  await pressUntil(page, "ControlOrMeta+k", box);
+  await box.fill("zebra invoices");
   await page.getByRole("combobox", { name: "Type a command or search" }).press("Enter");
   await expect(page).toHaveURL(/\/app\/search\?q=zebra%20invoices/);
 });

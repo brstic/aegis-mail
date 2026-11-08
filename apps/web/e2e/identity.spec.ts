@@ -219,7 +219,8 @@ test.describe("adding a factor when you sign in through a provider", () => {
     };
     await person.goto("/sign-in");
     await throughProvider();
-    await expect(person).toHaveURL(/\/app/);
+    // Where the redirects end, so the next navigation doesn't cut one short.
+    await expect(person).toHaveURL(/\/app\/(inbox|focus|onboarding)/);
 
     await person.goto("/app/settings/security");
     await expect(person.getByRole("button", { name: "Add a passkey" })).toBeVisible();

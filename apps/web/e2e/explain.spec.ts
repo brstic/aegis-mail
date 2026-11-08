@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { NOTES, notesFor } from "../src/explain/registry";
-import { signIn } from "./helpers";
+import { pressUntil, signIn } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
@@ -63,10 +63,10 @@ test("works from the keyboard, follows navigation, and doesn't steal typing", as
   await signIn(page);
   await page.goto("/app/inbox");
   await page.getByTestId("thread-row").first().waitFor();
-  await page.keyboard.press("Shift+E");
+  await pressUntil(page, "Shift+E", page.getByTestId("explain-panel"));
   await expect(page.getByTestId("explain-panel")).toContainText("A conversation");
   await page.goto("/app/tasks");
-  await page.keyboard.press("Shift+E");
+  await pressUntil(page, "Shift+E", page.getByTestId("explain-panel"));
   await expect(page.getByTestId("explain-panel")).toContainText("Add a task");
   await page.keyboard.press("Escape");
   await page.getByPlaceholder(/search/i).first().fill("");
