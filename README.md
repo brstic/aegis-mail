@@ -8,14 +8,7 @@
 
 AI reads every message and opens every link, script and PDF before you do. Phishing and malware are held back, and what matters comes first. Gmail, Outlook, iCloud and IMAP, in one place.
 
-[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-0a66d8?style=flat-square)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/brstic/aegis-mail/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/brstic/aegis-mail/actions/workflows/ci.yml)
-[![Self-hosted](https://img.shields.io/badge/self--hosted-Docker%20Compose-2496ED?style=flat-square&logo=docker&logoColor=white)](docs/self-hosting.md)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](tsconfig.base.json)
-[![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs&logoColor=white)](apps/web)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white)](packages/db/migrations)
-[![Node](https://img.shields.io/badge/node-%E2%89%A522-339933?style=flat-square&logo=nodedotjs&logoColor=white)](package.json)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-34c759?style=flat-square)](CONTRIBUTING.md)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-0a66d8?style=flat-square)](LICENSE) [![CI](https://img.shields.io/github/actions/workflow/status/brstic/aegis-mail/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/brstic/aegis-mail/actions/workflows/ci.yml) [![Self-hosted](https://img.shields.io/badge/self--hosted-Docker%20Compose-2496ED?style=flat-square&logo=docker&logoColor=white)](docs/self-hosting.md) [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](tsconfig.base.json) [![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs&logoColor=white)](apps/web) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&logo=postgresql&logoColor=white)](packages/db/migrations) [![Node](https://img.shields.io/badge/node-%E2%89%A522-339933?style=flat-square&logo=nodedotjs&logoColor=white)](package.json) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-34c759?style=flat-square)](CONTRIBUTING.md)
 
 [**Self-host it**](#self-hosting) · [Features](#features) · [Screenshots](#screenshots) · [Development](#development) · [Docs](#documentation)
 
@@ -73,7 +66,7 @@ AI reads every message and opens every link, script and PDF before you do. Phish
 
 ## Features
 
-| | |
+| | What it does |
 |---|---|
 | **Message security** | SPF, DKIM and DMARC results, lookalike domains, mismatched and disguised links, QR codes, invoice and payment-change fraud, CEO impersonation, and hidden instructions aimed at AI. Every rating comes with its reasons. |
 | **Attachment inspection** | PDFs are decoded and checked for JavaScript, auto-run and launch actions and embedded files; Office files for macros, remote templates and DDE; RTF, HTML and SVG for exploits, sign-in forms and smuggling. Optional ClamAV scanning, included in the Docker stack. |
@@ -106,10 +99,25 @@ This builds the images and starts PostgreSQL, ClamAV, a migration step, the web 
 
 **Connect mail.** In the app, go to Connect. IMAP and SMTP mailboxes work with no server setup: use an app password. Gmail and Outlook need your own OAuth clients:
 
-| Provider | Register | Redirect URI | Scopes | Settings |
-|---|---|---|---|---|
-| Gmail | Google Cloud project, Gmail API enabled, OAuth client of type "Web application" | `<APP_ORIGIN>/api/v1/oauth/gmail/callback` | `gmail.modify` (or `gmail.readonly` for read-only) | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| Outlook, Microsoft 365 | Microsoft Entra app registration, any organization and personal accounts, platform "Web" | `<APP_ORIGIN>/api/v1/oauth/microsoft/callback` | Delegated `Mail.ReadWrite`, `Mail.Send`, `offline_access`, `User.Read` (or `Mail.Read` for read-only) | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` |
+<details>
+<summary><b>Gmail</b></summary>
+
+- **Register:** a Google Cloud project with the Gmail API enabled, and an OAuth client of type "Web application".
+- **Redirect URI:** `<APP_ORIGIN>/api/v1/oauth/gmail/callback`
+- **Scopes:** `gmail.modify` (or `gmail.readonly` for read-only)
+- **Settings:** `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
+
+</details>
+
+<details>
+<summary><b>Outlook and Microsoft 365</b></summary>
+
+- **Register:** a Microsoft Entra app registration for any organization and personal accounts, platform "Web".
+- **Redirect URI:** `<APP_ORIGIN>/api/v1/oauth/microsoft/callback`
+- **Scopes:** delegated `Mail.ReadWrite`, `Mail.Send`, `offline_access`, `User.Read` (or `Mail.Read` for read-only)
+- **Settings:** `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`
+
+</details>
 
 A Google app in **Testing** status works for up to 100 test users that you list. Beyond that, Gmail's restricted scopes need Google's verification. Push notifications (Gmail through Pub/Sub, Microsoft through Graph subscriptions) are optional; without them, mailboxes are polled.
 
