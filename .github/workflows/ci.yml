@@ -59,6 +59,10 @@ jobs:
       - run: pnpm --filter @aegis/web exec playwright install --with-deps chromium
       # Visual baselines are per platform and committed for macOS, so CI compares behaviour only.
       - run: pnpm --filter @aegis/web exec playwright test --ignore-snapshots
+      - name: Keep traces of failed tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: e2e-test-results, path: apps/web/test-results, retention-days: 7, if-no-files-found: ignore }
   supply-chain:
     runs-on: ubuntu-latest
     timeout-minutes: 15

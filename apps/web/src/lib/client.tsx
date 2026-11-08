@@ -1,6 +1,6 @@
 "use client";
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); this.name = "ApiError"; }
@@ -34,10 +34,19 @@ async function send<T = any>(path: string, init: { method?: string; body?: unkno
   return data as T;
 }
 
+const subscribeNever = () => () => {};
+/** False while React hydrates the server's HTML, true from then on, including every render after a client-side navigation. */
+export function useHydrated() { return useSyncExternalStore(subscribeNever, () => true, () => false); }
+
 export function useApi<T = any>(key: unknown[], path: string | null, opts?: Partial<UseQueryOptions<T, ApiError>>) {
   // A query keeps one function, from whichever observer rendered last, and an invalidation runs it. So a switched-off observer gets its
   // own key: sharing one would have live observers fetch this one's null path, and get a 404 instead of their data.
-  return useQuery<T, ApiError>({ queryKey: path === null ? [...key, "off"] : key, queryFn: () => api<T>(path!), enabled: path !== null, retry: (n, e) => e.status === 0 ? false : e.status >= 500 && n < 2, ...opts });
+  const q = useQuery<T, ApiError>({ queryKey: path === null ? [...key, "off"] : key, queryFn: () => api<T>(path!), enabled: path !== null, retry: (n, e) => e.status === 0 ? false : e.status >= 500 && n < 2, ...opts });
+  // The server renders with no data. A part of the page that hydrates late, such as a Suspense boundary on a slow device, can find data
+  // another part has already fetched; rendering it then wouldn't match the server's HTML, and React would throw that HTML away. So while
+  // hydrating, every query reads as still loading, and the data shows one render later.
+  const hydrated = useHydrated();
+  return hydrated ? q : ({ ...q, data: undefined, isPending: true, isLoading: true, isSuccess: false, status: "pending" } as unknown as typeof q);
 }
 
 export interface ToastItem { id: number; text: string; tone?: "default" | "danger"; action?: { label: string; run: () => void } }
