@@ -6,6 +6,7 @@ import { audit } from "./audit";
 import { requireOwner, saveDraft } from "./send";
 import { getPrefs } from "./prefs";
 import { countAiAction } from "./limits";
+import { recordAiUsage } from "./ai-usage";
 
 export async function providerFor(p: Platform, ctx: { tenantId: string; userId: string }): Promise<InferenceProvider> {
   const override = p.inferenceOverride?.(ctx);
@@ -13,8 +14,8 @@ export async function providerFor(p: Platform, ctx: { tenantId: string; userId: 
   const prefs = await getPrefs(p, ctx as Ctx);
   const tenantOptOut = await p.db.withUser(ctx as Ctx, t => t.one<any>("SELECT policy->>'hostedModelsDisabled' d FROM tenant_policies WHERE tenant_id=$1", [ctx.tenantId]));
   return selectProvider({
-    apiKey: p.config.anthropicApiKey, baseURL: p.config.llmBaseUrl, model: p.config.llmModel, aiEnabled: prefs.aiEnabled !== false, hostedConsent: prefs.hostedModelConsent === true && tenantOptOut?.d !== "true",
-    onUsage: u => { void p.db.withUser(ctx as Ctx, t => t.query("INSERT INTO ai_usage(tenant_id,user_id,provider,model,purpose,input_tokens,output_tokens,latency_ms) VALUES ($1,$2,'anthropic',$3,$4,$5,$6,$7)", [ctx.tenantId, ctx.userId, p.config.llmModel ?? "claude-opus-5-5", u.purpose, u.inputTokens, u.outputTokens, u.latencyMs])).catch(() => {}); },
+    hosted: p.config.ai, aiEnabled: prefs.aiEnabled !== false, hostedConsent: prefs.hostedModelConsent === true && tenantOptOut?.d !== "true",
+    onUsage: u => { void recordAiUsage(p, "user", ctx, u).catch(() => {}); },
   }).provider;
 }
 

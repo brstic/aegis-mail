@@ -117,6 +117,13 @@ describe("Gmail vertical slice", () => {
     expect(t.messages[0]!.html).not.toMatch(/<script|t\.test\/p\.gif/);
     expect(t.messages[0]!.trackingPixels).toBe(1);
   });
+  it("connecting the Gmail mailbox for the sign-in address verifies the account, with no emailed link", async () => {
+    // Nothing clicked a link here: this deployment has no relay, and Google vouched for the address during the connection.
+    const u = await p.db.withSystem(t => t.one<any>("SELECT email_verified_at FROM users WHERE id=$1", [ctx.userId]));
+    expect(u.email_verified_at).not.toBeNull();
+    const events = await p.db.withSystem(t => t.query<any>("SELECT meta FROM audit_events WHERE actor_user_id=$1 AND event='auth.email_verified'", [ctx.userId]));
+    expect(events.map(e => e.meta)).toEqual([{ provider: "gmail", reason: "mailbox_oauth" }]);
+  });
   it("quarantine moves the Gmail copy to Spam; release restores INBOX", async () => {
     const q = await listThreads(p, ctx, { view: "quarantine", limit: 10 });
     expect(q.items.map(i => i.subject)).toEqual(["New bank details"]);

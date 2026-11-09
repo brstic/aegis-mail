@@ -91,7 +91,7 @@ export default function PoliciesPage() {
             <Card title="Data and AI">
               <div className="space-y-3">
                 <Field label="Retention in days" hint="Cached mail older than this is deleted from this service. Leave empty to keep it while a mailbox is connected. This doesn't change your mail provider's copy." error={retentionError}><input type="number" min={1} max={3650} inputMode="numeric" className={inputClass} value={retention} onChange={e => setRetention(e.target.value)} /></Field>
-                <Toggle label="Turn off hosted AI models" checked={hostedOff} disabled={!canEdit} onChange={setHostedOff} description="No one's mail text goes to a hosted model, even if they've consented. Rules on this deployment still work." />
+                <Toggle label="Turn off hosted AI models" checked={hostedOff} disabled={!canEdit} onChange={setHostedOff} description="No one's mail text goes to a hosted model: not for security review, and not for summaries or drafts. Rules on this deployment still work." />
               </div>
             </Card>
           </fieldset>

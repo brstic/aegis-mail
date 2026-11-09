@@ -7,6 +7,7 @@ import { ChoiceGroup, Head, PageSkeleton, usePrefPatch } from "@/components/sett
 import { Banner, Button, Card, ErrorState, Field, inputClass, Toggle } from "@/components/ui";
 import { applyTheme } from "@/components/workspace/shell";
 import { useMe, usePrefs, useToast } from "@/lib/client";
+import { DEFAULT_LAYOUT } from "@/components/workspace/layout-switcher";
 
 const HOURS = Array.from({ length: 24 }, (_, h) => ({ value: h, label: new Date(2026, 0, 1, h).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) }));
 
@@ -17,16 +18,31 @@ function HourSelect({ label, value, onChange, end }: { label: string; value: num
 function zones(current: string) {
   let list: string[] = [];
   try { list = (Intl as unknown as { supportedValuesOf: (k: string) => string[] }).supportedValuesOf("timeZone"); } catch { /* older browsers */ }
-  return list.includes(current) ? list : [current, ...list];
+  return (list.includes(current) ? list : [current, ...list]).filter(Boolean);
+}
+
+/**
+ * The browser's time zone. Some systems have a zone with no IANA name: Chrome on Windows set to "Alberta Standard
+ * Time" reports undefined rather than throwing. The fixed-offset zone for the clock's current offset stands in for it,
+ * which is right until the next daylight-saving change and can be corrected in the list.
+ */
+function browserTimeZone(): string {
+  try {
+    const named = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (named) return named;
+  } catch { /* fall through to the offset */ }
+  const minutes = new Date().getTimezoneOffset();
+  // Etc/GMT signs are inverted: six hours behind UTC is Etc/GMT+6.
+  return minutes && minutes % 60 === 0 ? `Etc/GMT${minutes > 0 ? "+" : "-"}${Math.abs(minutes) / 60}` : "UTC";
 }
 
 function Hours({ prefs }: { prefs: any }) {
   const patch = usePrefPatch("Saved.");
-  const browserTz = useMemo(() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return "UTC"; } }, []);
+  const browserTz = useMemo(browserTimeZone, []);
   const [workOn, setWorkOn] = useState<boolean>(!!prefs.workingHours);
   const [start, setStart] = useState<number>(prefs.workingHours?.start ?? 9);
   const [end, setEnd] = useState<number>(prefs.workingHours?.end ?? 17);
-  const [tz, setTz] = useState<string>(prefs.timeZone ?? prefs.workingHours?.tz ?? browserTz);
+  const [tz, setTz] = useState<string>(prefs.timeZone || prefs.workingHours?.tz || browserTz);
   const [quietOn, setQuietOn] = useState<boolean>(!!prefs.quietHours);
   const [quietStart, setQuietStart] = useState<number>(prefs.quietHours?.start ?? 22);
   const [quietEnd, setQuietEnd] = useState<number>(prefs.quietHours?.end ?? 7);
@@ -128,7 +144,7 @@ export default function PersonalizationPage() {
               <ChoiceGroup legend="Density" columns={3} value={prefs.density ?? "comfortable"} onChange={density => patch.mutate({ density })} options={[
                 { value: "compact", label: "Compact", description: "More messages on screen." }, { value: "comfortable", label: "Comfortable", description: "A balance of both." }, { value: "spacious", label: "Spacious", description: "More room around each message." },
               ]} />
-              <ChoiceGroup legend="Mail layout" value={prefs.layout ?? "split"} onChange={layout => patch.mutate({ layout })} options={[
+              <ChoiceGroup legend="Mail layout" value={prefs.layout ?? DEFAULT_LAYOUT} onChange={layout => patch.mutate({ layout })} options={[
                 { value: "split", label: "Split", icon: Columns2, description: "List beside the open message." },
                 { value: "full", label: "Full width", icon: Square, description: "The open message replaces the list." },
                 { value: "by_account", label: "Grouped by account", icon: Users, description: "One group per mailbox." },

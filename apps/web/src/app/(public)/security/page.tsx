@@ -6,7 +6,7 @@ import { cardClass, ClosingCta, Container, More, PageIntro, Section } from "@/co
 export const metadata: Metadata = { title: "Security", description: "AI that takes every message apart and opens every attachment: phishing, malicious scripts and exploit PDFs, held before you open them." };
 
 const LAYERS: [string, string][] = [
-  ["AI review", "A model reads each message the way an attacker hopes you won't, and judges what the inspector found inside every file. It can raise the risk, never lower it."],
+  ["AI review", "A model reads each message the way an attacker hopes you won't, and judges what the inspector found inside every file. It also checks every flag the detectors raise, so an order confirmation or a colleague's personal address isn't held by mistake, and remembers the sender it cleared. It can never clear malware or a forged sender."],
   ["Attachments, opened", "PDFs are decompressed stream by stream, and their scripts, auto-run actions, launch commands, hidden programs and links pulled out. Office files are checked for macros, remote templates and Follina-style links, RTF for Equation Editor exploits, web pages and SVG for fake sign-in forms and HTML smuggling, and scripts for what they download and run."],
   ["Malware signatures", "Attachments are also checked against ClamAV malware signatures. Archives are read without unpacking, so a zip bomb can't stall it."],
   ["Links", "Text that shows one site and goes to another, raw IP addresses, disguised user info, open redirects, shorteners and mixed alphabets. Links inside PDFs and documents, and QR codes in images, are checked the same way."],

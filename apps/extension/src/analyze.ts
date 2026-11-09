@@ -14,7 +14,7 @@ export function checkLink(href: string, text: string): LinkFinding | null {
   const host = u.hostname.toLowerCase();
   if (u.username) return { kind: "userinfo", message: `The address is disguised. It really goes to ${host}.` };
   const hit = findLookalike(host);
-  if (hit) return { kind: "lookalike", message: `${host} imitates ${hit.brand ?? hit.target}.` };
+  if (hit && hit.kind !== "tld_variant" && !hit.nearMiss) return { kind: "lookalike", message: `${host} imitates ${hit.brand ?? hit.target}.` };
   const m = text.trim().match(SHOWN);
   if (m && registrableDomain(m[1]!.toLowerCase()) !== registrableDomain(host) && !isWebmailWrapper(host)) return { kind: "mismatch", message: `The link says ${m[1]} but goes to ${host}.` };
   if (URL_SHORTENERS.has(registrableDomain(host))) return { kind: "shortener", message: `${host} hides the real destination.` };

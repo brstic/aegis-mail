@@ -1,12 +1,12 @@
 "use client";
-import { Star, UserMinus, Users } from "lucide-react";
+import { ShieldCheck, Star, UserMinus, Users } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Head } from "@/components/settings/common";
 import { Avatar, Banner, Button, Chip, EmptyState, ErrorState, ListSkeleton, Modal } from "@/components/ui";
 import { api, relTime, useAccounts, useAction, useApi, usePrefs } from "@/lib/client";
 
-interface Contact { id: string; name?: string; address: string; account: string; received: number; sentTo: number; replied: number; dismissed: number; vip: boolean; ignored: boolean; lastSeenAt: string }
+interface Contact { id: string; name?: string; address: string; account: string; received: number; sentTo: number; replied: number; dismissed: number; vip: boolean; ignored: boolean; lastSeenAt: string; exception: { scope: "sender" | "domain"; by: "ai" | "user" } | null }
 
 function AccountRanking() {
   const { data: accounts } = useAccounts();
@@ -35,7 +35,7 @@ export default function PeoplePage() {
   const { data, isLoading, error, refetch } = useApi<Contact[]>(["contacts"], "/contacts");
   const qc = useQueryClient();
   const refresh = () => void qc.invalidateQueries({ queryKey: ["contacts"] });
-  const set = useAction<{ id: string; vip?: boolean; ignored?: boolean }>(({ id, ...body }) => api(`/contacts/${id}`, { method: "PATCH", body }), { refresh: false, onDone: refresh });
+  const set = useAction<{ id: string; vip?: boolean; ignored?: boolean; exception?: false }>(({ id, ...body }) => api(`/contacts/${id}`, { method: "PATCH", body }), { refresh: false, onDone: refresh });
   const reset = useAction<void, { reset: number }>(() => api("/contacts/reset-learning", { method: "POST" }), { refresh: false, success: "Learned preferences were reset.", onDone: () => { setConfirm(false); refresh(); } });
   const [confirm, setConfirm] = useState(false);
   return (
@@ -49,11 +49,13 @@ export default function PeoplePage() {
             <li key={c.id} className="flex flex-wrap items-center gap-3 border-b border-line p-3 last:border-b-0">
               <Avatar name={c.name} address={c.address} />
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-1.5"><span className="truncate font-medium">{c.name || c.address}</span>{c.vip && <Chip tone="accent">Important</Chip>}{c.ignored && <Chip>Ignored</Chip>}</div>
+                <div className="flex flex-wrap items-center gap-1.5"><span className="truncate font-medium">{c.name || c.address}</span>{c.vip && <Chip tone="accent">Important</Chip>}{c.ignored && <Chip>Ignored</Chip>}{c.exception && <Chip>Cleared sender</Chip>}</div>
                 <div className="truncate text-xs text-muted">{c.address} · {c.account}</div>
                 <div className="mt-0.5 text-xs text-muted">Received {c.received} · You sent {c.sentTo} · Replies {c.replied}{c.dismissed ? ` · Marked not important ${c.dismissed}` : ""} · Last seen {relTime(c.lastSeenAt)}</div>
+                {c.exception && <div className="mt-0.5 text-xs text-muted">{c.exception.by === "ai" ? "AI review cleared flagged mail from" : "You released flagged mail from"} {c.exception.scope === "domain" ? `everyone at ${c.address.split("@")[1]}` : "this address"}, so it isn't flagged for looking unfamiliar. Malware and forged mail are still stopped.</div>}
               </div>
               <div className="flex gap-1">
+                {c.exception && <Button size="sm" icon={ShieldCheck} onClick={() => set.mutate({ id: c.id, exception: false })}>Remove exception</Button>}
                 <Button size="sm" variant={c.vip ? "primary" : "secondary"} icon={Star} aria-pressed={c.vip} onClick={() => set.mutate({ id: c.id, vip: !c.vip, ignored: false })}>Important</Button>
                 <Button size="sm" variant={c.ignored ? "primary" : "secondary"} icon={UserMinus} aria-pressed={c.ignored} onClick={() => set.mutate({ id: c.id, ignored: !c.ignored, vip: false })}>Ignore</Button>
               </div>

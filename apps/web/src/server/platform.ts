@@ -1,9 +1,10 @@
 import { createPlatform, kmsConfigured, kmsFromEnv, type Platform } from "@aegis/platform";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 const rootEnv = join(process.cwd(), "../../.env");
-if (existsSync(rootEnv)) for (const l of readFileSync(rootEnv, "utf8").split("\n")) { const m = l.match(/^([A-Z_0-9]+)=(.*)$/); if (m && process.env[m[1]!] === undefined) process.env[m[1]!] = m[2]; }
+// Node's own parser, the same one the worker's --env-file uses: it handles quotes, comments and Windows line endings.
+if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 
 const g = globalThis as unknown as { __aegis?: Platform };
 /** One pool per process, surviving Next's dev module reloads. The web process logs in as the web role only. */

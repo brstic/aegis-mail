@@ -2,7 +2,7 @@
 export const EVENT_TYPES = [
   "account.connected", "account.sync_requested", "account.disconnected",
   "message.discovered", "message.normalized", "message.security_scanned", "message.classified",
-  "message.quarantined", "message.released", "focus.updated", "draft.generated",
+  "message.quarantined", "message.released", "sender.exception_added", "focus.updated", "draft.generated",
   "send.requested", "send.authorized", "send.completed", "send.failed",
   "provider.sync_failed", "token.revoked", "policy.changed", "automation.executed",
   "incident.shared", "incident.revoked", "member.invited", "member.role_changed", "session.revoked",

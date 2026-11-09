@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { platform } from "../platform";
-import { clientKey, readLimited, setSessionCookie, type RouteDef } from "../router";
+import { clientKey, readLimited, secureCookies, setSessionCookie, type RouteDef } from "../router";
 import { ua } from "./auth";
 
 /** Holds a value the browser that started a sign-in must present to finish it. See flowKey in sso.ts. */
@@ -17,7 +17,7 @@ const signInError = (code: string) => redirectTo(`/sign-in?error=${encodeURIComp
 /** A SAML response arrives as a cross-site POST, which a Lax cookie wouldn't come with. The value is useless without its flow row. */
 async function setFlowCookie(binding: string, protocol?: string) {
   const saml = protocol === "saml";
-  (await cookies()).set(FLOW_COOKIE, binding, { httpOnly: true, sameSite: saml ? "none" : "lax", secure: saml || process.env.NODE_ENV === "production", path: "/api/v1/auth", maxAge: 600 });
+  (await cookies()).set(FLOW_COOKIE, binding, { httpOnly: true, sameSite: saml ? "none" : "lax", secure: saml || secureCookies(), path: "/api/v1/auth", maxAge: 600 });
 }
 
 const Token = z.string().min(16).max(128);

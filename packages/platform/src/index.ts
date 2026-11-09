@@ -18,6 +18,7 @@ export * from "./send";
 export * from "./priority";
 export * from "./automations";
 export * from "./ai-service";
+export * from "./ai-usage";
 export * from "./assistant";
 export * from "./prefs";
 export * from "./org";

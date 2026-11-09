@@ -1,7 +1,8 @@
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createDatabase, dropDatabase, ensureLogin, migrate } from "./index";
 
-if (existsSync(".env")) for (const l of readFileSync(".env", "utf8").split("\n")) { const m = l.match(/^([A-Z_0-9]+)=(.*)$/); if (m && !process.env[m[1]!]) process.env[m[1]!] = m[2]; }
+// Node's own parser, the same one the worker's --env-file uses: it handles quotes, comments and Windows line endings.
+if (existsSync(".env")) process.loadEnvFile(".env");
 const url = process.env.DATABASE_URL ?? "postgres://localhost:5432/aegis_dev";
 const cmd = process.argv[2];
 const log = (s: string) => console.log(s);

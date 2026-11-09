@@ -9,7 +9,8 @@ locals {
   optional = {
     GOOGLE_CLIENT_SECRET    = "Google OAuth client"
     MICROSOFT_CLIENT_SECRET = "Microsoft OAuth client"
-    ANTHROPIC_API_KEY       = "Hosted AI"
+    OPENAI_API_KEY          = "Hosted AI"
+    ANTHROPIC_API_KEY       = "Hosted AI, alternative provider"
   }
   secrets = merge(local.required, { for k, v in local.optional : k => v if contains(var.optional_secrets, k) })
 }

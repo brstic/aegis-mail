@@ -5,6 +5,7 @@ import { disconnectAccount } from "./accounts";
 import { getThread } from "./mail";
 import { getPrefs } from "./prefs";
 import { providerFor } from "./ai-service";
+import { hostedModelName } from "./ai-usage";
 import { reauthenticate } from "./auth";
 import { recordErasure } from "./deletion-log";
 import { accountMemberships, eraseAccount, type ErasureScope, tombstoneAndPurge } from "./erasure";
@@ -23,7 +24,10 @@ export async function privacyCenter(p: Platform, ctx: Ctx) {
     vectors: await t.one<{ c: number }>("SELECT count(*)::int c FROM message_embeddings"),
     sealed: await t.one<{ c: number }>("SELECT count(*)::int c FROM message_contents WHERE sealed_blob IS NOT NULL"),
   }));
-  const hostedConfigured = !!p.config.anthropicApiKey;
+  const hostedConfigured = !!p.config.ai;
+  // Security review uses the server's hosted model for every mailbox. Only the workspace-wide switch turns it off.
+  const reviewModel = p.config.ai && data.policy?.policy?.hostedModelsDisabled !== true ? hostedModelName(p.config.ai) : null;
+  const reviewProvider = p.config.ai?.provider === "anthropic" ? "Anthropic" : "OpenAI";
   const clamd = !!p.config.clamd;
   return {
     mode: {
@@ -38,10 +42,11 @@ export async function privacyCenter(p: Platform, ctx: Ctx) {
       { name: "Embedding model on this server", purpose: "Semantic search", plaintext: !!p.embeddings && prefs.serverSearchEnabled !== false && prefs.semanticSearchEnabled !== false, condition: !p.embeddings ? "Not enabled on this deployment" : prefs.serverSearchEnabled === false || prefs.semanticSearchEnabled === false ? "Off for your account" : "Reads each message's subject and opening text on this server. Nothing is sent to a model provider", caveat: p.embeddings ? `${data.vectors?.c ?? 0} vectors stored, encrypted like message bodies. They're opened in memory to answer a search.` : undefined },
       { name: "Malware scanner (clamd)", purpose: "Attachment scanning", plaintext: clamd, condition: clamd ? "Runs on attachments" : "Not configured. Attachments only get baseline checks and aren't reported as virus-free." },
       { name: "Transactional mail relay", purpose: "Verification, password reset and invitation email, and the digest if you turn it on", plaintext: p.mailer?.kind === "smtp", condition: p.mailer?.kind === "smtp" ? "Sees the recipient and those messages, which never contain your mail" : p.mailer ? "Not in use: mail is only recorded on this deployment" : "Not configured on this deployment" },
+      { name: "Hosted AI model", purpose: "Security review of incoming mail", plaintext: !!reviewModel, condition: reviewModel ? `Active for every mailbox on this server: ${reviewModel}, run by ${reviewProvider}. It reads each message's text and what was found inside its attachments` : hostedConfigured ? "Turned off for this workspace by its administrators" : "Not configured on this deployment" },
       { name: "Hosted AI model", purpose: "Summaries, drafts", plaintext: provider.hosted, condition: provider.hosted ? `Active: ${provider.model}` : hostedConfigured ? "Available, but off until you turn it on" : "Not configured on this deployment" },
     ],
     keys: { provider: p.kms.id, productionSafe: p.kms.productionSafe, classes: data.keys.map((k: any) => ({ class: k.key_class, version: Number(k.version) })), recovery: "Keys are managed by the service, so we can restore access after you lose a password. That's also why this isn't zero-access.", warning: p.kms.productionSafe ? null : "Development key store in use. Not for production." },
-    model: { id: provider.id, model: provider.model, hosted: provider.hosted, hostedConfigured, consent: prefs.hostedModelConsent === true, training: "Your email is never used to train models by this product.", retention: provider.hosted ? "Governed by the model provider's API terms. Verify your own agreement." : "Nothing leaves this deployment." },
+    model: { id: provider.id, model: provider.model, hosted: provider.hosted, hostedConfigured, consent: prefs.hostedModelConsent === true, securityReview: reviewModel ? { model: reviewModel, provider: reviewProvider } : null, training: "Your email is never used to train models by this product.", retention: provider.hosted || reviewModel ? "Governed by the model provider's API terms. Verify your own agreement." : "Nothing leaves this deployment." },
     connections: data.accounts.map((a: any) => ({ id: a.id, kind: a.kind, email: a.email, displayName: a.display_name, readOnly: a.read_only, status: a.status, simulated: a.settings?.simulated ?? null, credential: CAPABILITIES[a.kind as ProviderKind].oauth ? "OAuth token" : a.kind === "demo" ? "Synthetic, no credential" : "App password", scopes: a.scopes ?? [], grantedAt: a.granted_at, limitations: CAPABILITIES[a.kind as ProviderKind].limitations, revokeSupported: CAPABILITIES[a.kind as ProviderKind].revokeSupported })),
     region: p.config.region ?? null,
     controls: { summariesEnabled: prefs.summariesEnabled !== false, topicsEnabled: prefs.topicsEnabled !== false, storeAttachments: prefs.storeAttachments !== false, aiEnabled: prefs.aiEnabled !== false, personalizationEnabled: prefs.personalizationEnabled !== false, hostedModelConsent: prefs.hostedModelConsent === true, serverSearchEnabled: prefs.serverSearchEnabled !== false, semanticSearchEnabled: prefs.semanticSearchEnabled !== false },

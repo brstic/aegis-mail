@@ -81,9 +81,14 @@ export function normalizeHref(raw: string): string | null {
 
 /** Plain text of already-sanitized HTML. Used so analysis reads what the person will actually see. */
 export function htmlToText(html: string): string {
-  return sanitizeHtml(html, { allowedTags: [], allowedAttributes: {}, nonTextTags: ["script", "style", "title", "head"] })
+  // Tags are removed, so the breaks they stood for have to be put back first. Otherwise "…attached.</p><p>Thanks" reads
+  // as "attached.Thanks", which looks like a web address to everything downstream. Table cells get a space.
+  const spaced = html
+    .replace(/<\/?(?:p|div|br|tr|li|h[1-6]|table|ul|ol|blockquote|section|article|header|footer|pre|hr)\b[^>]*>/gi, m => `\n${m}`)
+    .replace(/<\/?(?:td|th)\b[^>]*>/gi, m => ` ${m}`);
+  return sanitizeHtml(spaced, { allowedTags: [], allowedAttributes: {}, nonTextTags: ["script", "style", "title", "head"] })
     .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-    .replace(/[ \t]+/g, " ").trim();
+    .replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /** Allowlist sanitizer. HTML email is hostile input; the output is still rendered in a sandbox iframe. */

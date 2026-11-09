@@ -24,7 +24,11 @@ export function extractUrls(text: string, html?: string): ExtractedUrl[] {
     // A streaming parser, since markup like "<a <a <a ..." makes patterns superlinear.
     let href: string | null = null, visible = "";
     const parser = new Parser({
-      onopentag(name, attrs) { if (name === "a" && attrs.href && out.length < MAX_URLS) { href = attrs.href.trim(); visible = ""; } },
+      onopentag(name, attrs) {
+        if (name === "a" && attrs.href && out.length < MAX_URLS) { href = attrs.href.trim(); visible = ""; }
+        // A line break inside a link separates words on screen. Inline tags don't, so text split across spans still joins.
+        else if (href !== null && /^(br|div|p|td|tr|li|h[1-6])$/.test(name)) visible += " ";
+      },
       ontext(t) { if (href !== null && visible.length < 2000) visible += t; },
       onclosetag(name) {
         if (name !== "a" || href === null) return;

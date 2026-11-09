@@ -111,7 +111,9 @@ function selectableBoxes(boxes: readonly ImapMailbox[]): ImapMailbox[] {
   const selectable = boxes.filter((b) => {
     const flags = b.flags.map((f) => f.toLowerCase());
     if (flags.includes("\\noselect") || flags.includes("\\nonexistent")) return false;
+    // imapflow only maps some special uses; Gmail's \Important arrives as a plain flag.
     const special = b.specialUse?.toLowerCase();
+    if (["\\all", "\\flagged", "\\important"].some(v => flags.includes(v))) return false;
     return special !== "\\all" && special !== "\\flagged" && special !== "\\important";
   });
   const rank = (b: ImapMailbox) => (imapFolderRole(b) === "custom" ? 1 : 0);

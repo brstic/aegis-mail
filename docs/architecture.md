@@ -28,7 +28,7 @@ The API and worker are separate processes on different sides of a trust boundary
 | `mail-parser` | Bounded MIME parse, HTML sanitization, URL extraction | mailparser, sanitize-html |
 | `mail-adapters` | `MailAdapter` interface and Gmail, Graph, IMAP/SMTP, POP3, Demo adapters; SSRF guard; discovery | imapflow, nodemailer, oauth4webapi |
 | `security-engine` | Detectors, evidence combination, policy engine, malware interface, eval harness | mail-parser |
-| `ai-core` | Inference abstraction, local heuristic and Anthropic providers, injection defenses, draft checks | domain |
+| `ai-core` | Inference abstraction, the local heuristic provider, hosted providers (OpenAI, and Anthropic as the alternative) behind one set of prompts, injection defenses, draft checks | domain |
 | `db` | SQL migrations, RLS contexts | pg |
 | `platform` | Services: auth, ingestion, jobs, focus, send, quarantine, automations, org, privacy, operators | all above |
 | `test-fixtures` | Synthetic MIME corpus with labels | — |

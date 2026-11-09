@@ -1,7 +1,7 @@
 import type { EventType } from "@aegis/domain";
 import type { Tx } from "@aegis/db";
 
-const META_ALLOWED = new Set(["provider", "role", "outcome", "code", "count", "label", "reason", "provider_moved", "scopes", "hours", "redacted", "kind", "fields", "automation_id", "attempt", "action", "ip_hash"]);
+const META_ALLOWED = new Set(["provider", "role", "outcome", "code", "count", "label", "reason", "provider_moved", "scopes", "hours", "redacted", "kind", "fields", "automation_id", "attempt", "action", "ip_hash", "scope", "by"]);
 
 export function cleanMeta(meta: Record<string, unknown> = {}) {
   const out: Record<string, unknown> = {};

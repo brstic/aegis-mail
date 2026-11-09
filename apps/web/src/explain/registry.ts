@@ -116,7 +116,7 @@ export const NOTES: Record<string, Note[]> = {
   "/app/org/policies": [
     { find: "Blocked mail", title: "Blocked mail", text: "Which rating gets blocked, and whether releasing the most dangerous mail needs an owner's or security admin's approval." },
     { find: "Mail handling", title: "Mail handling", text: "Workspace-wide rules, including blocking outbound mail to a domain. Blocks are checked when a message is approved and again when it's sent." },
-    { find: "Data and AI", title: "Data and AI", text: "Turn off hosted models for everyone here. Security analysis keeps running either way, because it doesn't use them." },
+    { find: "Data and AI", title: "Data and AI", text: "Turn off hosted models for everyone here. The detectors keep checking every message either way. What stops is the AI's review of what they flag." },
     { find: "Encryption keys", title: "Encryption keys", text: "Rotate this workspace's keys. New data uses the new key, and old data stays readable." },
   ],
   "/app/org/sso": [

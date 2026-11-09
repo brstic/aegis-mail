@@ -46,7 +46,10 @@ describe("migration 021 on a database that was in use", () => {
   afterAll(async () => { await c?.end(); await dropDatabase(url); });
 
   it("was applied by migrate, after the others", async () => {
-    expect((await q("SELECT name FROM schema_migrations ORDER BY name DESC LIMIT 1"))[0].name).toBe("021_remove_billing.sql");
+    // Later migrations run after it in the same call, so it's the first one `migrate` had to apply here, not the last on record.
+    const applied = (await q("SELECT name FROM schema_migrations ORDER BY name")).map(r => r.name);
+    expect(applied).toContain("021_remove_billing.sql");
+    expect(applied).toEqual([...applied].sort());
   });
 
   it("turns billing managers into members, and says so in the workspace's audit log", async () => {

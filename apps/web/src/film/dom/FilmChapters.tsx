@@ -202,7 +202,7 @@ export async function FilmChapters() {
           <DetailSheet title="What the AI can touch">
             <ul>
               <li>Security checks run on every message. With AI review on, a model also judges each message and what was found inside its files.</li>
-              <li>A hosted model only sees your mail once you&apos;ve turned it on.</li>
+              <li>A hosted model only sees mail on a server whose operator gave it a key.</li>
               <li>Summaries and drafts are separate features you can turn off.</li>
               <li>The model has no tool to send. Instructions hidden in a message can&apos;t give it one.</li>
             </ul>

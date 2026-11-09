@@ -5,7 +5,7 @@ import { useState, type FormEvent } from "react";
 import { ConfirmModal, Details, Head, linkClass, PageSkeleton, textareaClass, usePrefPatch } from "@/components/settings/common";
 import { Button, Chip, EmptyState, ErrorState, Field, IconButton, inputClass } from "@/components/ui";
 import { sendableAccounts } from "@/components/workspace/composer";
-import { api, useAccounts, useAction, usePrefs, type Account } from "@/lib/client";
+import { api, useAccounts, useAction, usePrefs, type Account, uuid } from "@/lib/client";
 
 interface Signature { id: string; accountId: string; name: string; text: string; isDefault: boolean }
 
@@ -60,7 +60,7 @@ function AccountIdentity({ a, all }: { a: Account; all: Signature[] }) {
           ))}
         </ul>
       )}
-      {adding ? <div className="mt-2"><SignatureForm busy={patch.isPending} onCancel={() => setAdding(false)} onSave={v => { write([...all, { id: crypto.randomUUID(), accountId: a.id, ...v, isDefault: !mine.length }]); setAdding(false); }} /></div> : <Button size="sm" className="mt-2" icon={Plus} onClick={() => setAdding(true)}>Add a signature</Button>}
+      {adding ? <div className="mt-2"><SignatureForm busy={patch.isPending} onCancel={() => setAdding(false)} onSave={v => { write([...all, { id: uuid(), accountId: a.id, ...v, isDefault: !mine.length }]); setAdding(false); }} /></div> : <Button size="sm" className="mt-2" icon={Plus} onClick={() => setAdding(true)}>Add a signature</Button>}
 
       <h3 className="mt-4 flex items-center gap-1.5 border-t border-line pt-3 text-[13px] font-semibold"><AtSign className="size-3.5" aria-hidden />Other addresses it can send as</h3>
       {a.owned ? (

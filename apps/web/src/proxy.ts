@@ -27,7 +27,9 @@ export function proxy(req: NextRequest) {
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${dev ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    // https: is for message bodies. They render in a srcdoc frame, which inherits this policy as well as its own, and
+    // its own is what keeps remote images blocked until the reader asks for them. Without https: here, they never load.
+    "img-src 'self' data: https:",
     "font-src 'self'",
     `connect-src 'self'${dev ? " ws:" : ""}`,
     "frame-src 'self' about:",

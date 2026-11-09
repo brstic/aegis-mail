@@ -30,7 +30,8 @@ import {
   safeCode,
 } from "./shared";
 
-const CONCURRENCY = 6;
+// Graph allows four concurrent requests per app per mailbox. One over the limit is a 429 that throws the page away.
+const CONCURRENCY = 3;
 const MAX_PAGE = 100;
 /** Graph allows 10,080 minutes without resource data. We ask for about 6 days. */
 export const GRAPH_SUBSCRIPTION_MINUTES = 6 * 24 * 60;

@@ -2,25 +2,46 @@ import { DEFAULT_POLICY, type Evidence, type PolicyAction, type RiskLabel, type 
 import { emailDomain, type ParsedMail } from "@aegis/mail-parser";
 import { analyzeAttachments, BaselineScanner, type AttachmentInput, type MalwareScanner } from "./attachments";
 import type { FileBrief } from "./files";
-import { authDetector, brandContentMismatch, bulkDetector, contentDetector, EMPTY_RELATIONSHIP, headerDetector, injectionDetector, relationshipDetector, spamDetector, trackingDetector, urlDetector, type RelationshipContext } from "./detectors";
+import { authDetector, brandContentMismatch, bulkDetector, contentDetector, EMPTY_RELATIONSHIP, headerDetector, injectionDetector, relationshipDetector, senderStanding, spamDetector, trackingDetector, urlDetector, type RelationshipContext } from "./detectors";
 import { registrableDomain } from "./domains";
 
 export * from "./attachments";
 export * from "./files";
 export * from "./domains";
-export { EMPTY_RELATIONSHIP, parseAuthResults, screenPromptInjection, type InjectionScreen, type RelationshipContext } from "./detectors";
+export { EMPTY_RELATIONSHIP, parseAuthResults, screenPromptInjection, senderStanding, shownHost, type InjectionScreen, type RelationshipContext, type SenderStanding } from "./detectors";
 
-export const ENGINE_VERSION = "det-2026.11.2";
+export const ENGINE_VERSION = "det-2026.11.3";
 /** Prior log-odds. Most mail isn't malicious. */
 const PRIOR = -2.7;
 
 /** What the AI review sees: the message, plus a structural brief of each inspected attachment (signals and embedded code, no document text). */
 export interface SemanticInput { subject: string; text: string; fromDomain: string; attachments?: FileBrief[] }
 
-/** Optional semantic step. Advisory: can raise risk through evidence, never lower it or pick an action. */
+/** What the AI is shown when the detectors flag a message: the message, what each detector said, and what's known about the sender. */
+export interface FlagReviewInput extends SemanticInput {
+  fromName?: string;
+  label: RiskLabel;
+  findings: { code: string; explanation: string }[];
+  /** The provider's DMARC verdict passed for the sender's domain. */
+  authenticated: boolean;
+  linkHosts: string[];
+  priorMessages: number;
+  repliedBefore: boolean;
+}
+/**
+ * The AI's answer to a detector flag. `exception` says how far a false positive should be remembered: for the sender's
+ * whole domain, for this one address, or not at all.
+ */
+export interface FlagReview { verdict: "threat" | "false_positive" | "unsure"; confidence: number; rationale: string; exception: "sender" | "domain" | "none" }
+
+/**
+ * The AI steps. `classify` reads every message and can only add risk. `review` runs when the detectors flag a message
+ * and decides whether they were right; what it may clear is bounded by `reviewable` below.
+ */
 export interface SemanticClassifier {
   readonly id: string;
   classify(mail: SemanticInput): Promise<{ evidence: Evidence[] } | null>;
+  review?(flag: FlagReviewInput): Promise<FlagReview | null>;
 }
 
 export interface AnalyzeOptions {
@@ -56,6 +77,22 @@ export function labelFor(p: number, opts: { isBulk: boolean; hardFloor: boolean;
   return "safe";
 }
 
+/**
+ * Findings no review can clear: a file that matched malware, a forged sender, a domain the policy blocks, and text
+ * that tries to instruct the AI. A message that argues with its reviewer doesn't get the reviewer's benefit of the doubt.
+ */
+const NOT_CLEARABLE = new Set(["LIST_BLOCKED_DOMAIN", "AUTH_DMARC_FAIL", "AI_PROMPT_INJECTION", "LLM_ATTACHMENT_THREAT"]);
+const REVIEW_CODES = new Set(["AI_REVIEW_CLEARED", "AI_REVIEW_CONFIRMED", "AI_REVIEW_UNSURE"]);
+const clearable = (evidence: Evidence[]) => !evidence.some(e => e.weight > 0 && (e.hardFloor || e.category === "malware" || NOT_CLEARABLE.has(e.code)));
+const FLAGGED_LABELS = new Set<RiskLabel>(["suspicious", "high_risk", "malicious"]);
+
+/** Did a detector, rather than the AI's own reading, flag this message with something a review could overturn? */
+export function reviewable(result: SecurityResult): boolean {
+  return FLAGGED_LABELS.has(result.label) && clearable(result.evidence)
+    && !result.evidence.some(e => REVIEW_CODES.has(e.code) || (e.source === "llm" && e.weight > 0))
+    && result.evidence.some(e => e.weight > 0 && e.source !== "llm");
+}
+
 const RANK: Record<RiskLabel, number> = { safe: 0, bulk_low_priority: 0, unknown_unscannable: 1, suspicious: 2, high_risk: 3, malicious: 4 };
 
 /** Deterministic: same inputs, same action. No model can influence this function except through evidence. */
@@ -73,6 +110,8 @@ export function decideAction(label: RiskLabel, policy: TenantPolicy): { action: 
 
 function summarize(ev: Evidence[], label: RiskLabel, completeness: number): string {
   const top = ev.filter(e => e.weight > 0).sort((a, b) => b.weight - a.weight).slice(0, 3).map(e => e.explanation);
+  const review = ev.find(e => e.code === "AI_REVIEW_CLEARED");
+  if (review && (label === "safe" || label === "bulk_low_priority")) return review.explanation;
   if (label === "safe") return completeness < 1 ? "No concerning signals were found, though analysis was partial. This isn't a guarantee." : "No concerning signals were found. This isn't a guarantee.";
   if (label === "bulk_low_priority") return "This looks like routine bulk mail.";
   if (label === "unknown_unscannable" && !top.length) return "Part of this message couldn't be inspected, so it hasn't been rated safe.";
@@ -108,13 +147,21 @@ export function finalizeAnalysis(parts: AnalysisParts): SecurityResult {
   const threatProbability = Math.max(0.001, Math.min(0.999, sigmoid(score)));
   completeness = Math.max(0, Math.min(1, completeness));
 
-  const label = labelFor(threatProbability, { isBulk: parts.isBulk, hardFloor, completeness });
+  // The AI's review of a detector flag. Cleared mail is delivered. A flag the AI couldn't confirm is shown with a
+  // warning rather than hidden: hiding mail takes a confirmation, or a finding no review can clear.
+  const canClear = clearable(evidence);
+  const cleared = canClear && evidence.some(e => e.code === "AI_REVIEW_CLEARED");
+  const unconfirmed = canClear && !cleared && evidence.some(e => e.code === "AI_REVIEW_UNSURE");
+  let label = labelFor(threatProbability, { isBulk: parts.isBulk, hardFloor, completeness });
+  if (cleared && FLAGGED_LABELS.has(label)) label = labelFor(0, { isBulk: parts.isBulk, hardFloor: false, completeness });
+  else if (unconfirmed && RANK[label] > RANK.suspicious) label = "suspicious";
   const categories = [...new Set(evidence.filter(e => e.weight > 0 && e.category).map(e => e.category!))];
   const severity = RANK[label] >= 2 ? severityOf(categories) : "none";
   const { action, rationale } = decideAction(label, policy);
 
   return {
-    engineVersion: ENGINE_VERSION, threatProbability, severity, evidenceCompleteness: completeness, label, action,
+    engineVersion: ENGINE_VERSION, threatProbability: cleared ? Math.min(threatProbability, 0.2) : unconfirmed ? Math.min(threatProbability, 0.79) : threatProbability,
+    severity, evidenceCompleteness: completeness, label, action,
     categories, evidence: evidence.sort((a, b) => b.weight - a.weight),
     summary: summarize(evidence, label, completeness), actionRationale: rationale, provenance,
     ...(parts.scanVerdicts ? { scanVerdicts: parts.scanVerdicts } : {}),
@@ -137,10 +184,11 @@ export async function collectEvidence(mail: ParsedMail, attachments: AttachmentI
   if (mail.text.length > 200_000 || mail.visibleText.length > 200_000) { completeness -= 0.35; provenance.push("limits:content_window"); }
 
   const bulk = bulkDetector(mail);
+  const standing = senderStanding(mail, rel);
   const evidence: Evidence[] = [
     ...authDetector(mail),
-    ...headerDetector(mail, rel, policy.protectedDomains),
-    ...urlDetector(mail, rel, policy.protectedDomains, att.qrUrls, att.fileUrls),
+    ...headerDetector(mail, rel, policy.protectedDomains, standing),
+    ...urlDetector(mail, rel, policy.protectedDomains, att.qrUrls, att.fileUrls, standing),
     ...contentDetector(mail),
     ...brandContentMismatch(mail),
     ...spamDetector(mail),
@@ -167,15 +215,55 @@ export async function applySemantic(result: SecurityResult, semantic: SemanticCl
   try {
     const attachments = mail.attachments?.slice(0, 10);
     const r = await semantic.classify({ subject: mail.subject, text: mail.text.slice(0, 20_000), fromDomain: mail.fromDomain, ...(attachments?.length ? { attachments } : {}) });
-    if (r) { evidence.push(...r.evidence.map(e => ({ ...e, source: "llm" as const, hardFloor: false, weight: Math.min(Math.max(e.weight, 0), LLM_CAP[e.code] ?? 2.5) }))); provenance.push(`llm:${semantic.id}`); }
+    if (r) { evidence.push(...r.evidence.filter(e => !REVIEW_CODES.has(e.code)).map(e => ({ ...e, source: "llm" as const, hardFloor: false, weight: Math.min(Math.max(e.weight, 0), LLM_CAP[e.code] ?? 2.5) }))); provenance.push(`llm:${semantic.id}`); }
   } catch { provenance.push(`llm:${semantic.id}:unavailable`); completeness -= 0.05; }
   return finalizeAnalysis({ evidence, provenance, completeness, isBulk: result.evidence.some(e => e.code === "BULK_LIST_MAIL"), fromDomain: mail.fromDomain, policy: { ...DEFAULT_POLICY, ...policy }, scanVerdicts: result.scanVerdicts });
+}
+
+export interface ReviewOutcome { security: SecurityResult; verdict: FlagReview["verdict"] | "unavailable"; /** How far to remember a false positive, when the AI said to. */ exception: "sender" | "domain" | null }
+
+/**
+ * Asks the AI whether the detectors were right about a flagged message. Confirmed: the flag stands, with the AI's
+ * reasoning added. False positive: the message is delivered and the caller may record an exception. Unsure, or no
+ * answer: nothing is cleared. The label is still decided by finalizeAnalysis, which re-checks what may be cleared.
+ */
+export async function applyReview(result: SecurityResult, semantic: SemanticClassifier, flag: Omit<FlagReviewInput, "label" | "findings">, policy: Partial<TenantPolicy>): Promise<ReviewOutcome> {
+  if (!semantic.review || !reviewable(result)) return { security: result, verdict: "unavailable", exception: null };
+  const base = result.evidence.filter(e => e.code !== "LIST_ALLOWED_DOMAIN" && e.code !== "LIST_BLOCKED_DOMAIN");
+  const finish = (evidence: Evidence[], provenance: string[]) => finalizeAnalysis({ evidence, provenance, completeness: result.evidenceCompleteness, isBulk: result.evidence.some(e => e.code === "BULK_LIST_MAIL"), fromDomain: flag.fromDomain, policy: { ...DEFAULT_POLICY, ...policy }, scanVerdicts: result.scanVerdicts });
+  let r: FlagReview | null;
+  try {
+    r = await semantic.review({ ...flag, text: flag.text.slice(0, 20_000), linkHosts: flag.linkHosts.slice(0, 20), label: result.label, findings: result.evidence.filter(e => e.weight > 0).slice(0, 12).map(e => ({ code: e.code, explanation: e.explanation.slice(0, 400) })) });
+  } catch { r = null; }
+  if (!r) return { security: { ...result, provenance: [...result.provenance, `review:${semantic.id}:unavailable`] }, verdict: "unavailable", exception: null };
+  const confidence = Math.max(0, Math.min(1, r.confidence));
+  const why = r.rationale.replace(/\s+/g, " ").trim().slice(0, 300);
+  const provenance = [...result.provenance, `review:${semantic.id}`];
+  if (r.verdict === "false_positive" && confidence >= 0.75) {
+    const security = finish([...base, { code: "AI_REVIEW_CLEARED", weight: 0, source: "llm", explanation: `AI review checked what the detectors flagged and found ordinary mail: ${why}` }], provenance);
+    return { security, verdict: "false_positive", exception: FLAGGED_LABELS.has(security.label) || r.exception === "none" ? null : r.exception };
+  }
+  if (r.verdict === "threat") {
+    return { security: finish([...base, { code: "AI_REVIEW_CONFIRMED", weight: 2.5 * confidence, source: "llm", explanation: `AI review agreed with the detectors: ${why}` }], provenance), verdict: "threat", exception: null };
+  }
+  return { security: finish([...base, { code: "AI_REVIEW_UNSURE", weight: 0, source: "llm", explanation: `AI review couldn't confirm what the detectors flagged, so it's shown with a warning: ${why}` }], provenance), verdict: "unsure", exception: null };
+}
+
+/** The facts about a message that the AI review is given beside its text. */
+export function reviewFacts(mail: ParsedMail, rel: RelationshipContext, files: FileBrief[] = []): Omit<FlagReviewInput, "label" | "findings"> {
+  return {
+    subject: mail.subject, text: mail.visibleText || mail.text, fromDomain: emailDomain(mail.from?.address), fromName: mail.from?.name?.slice(0, 200),
+    authenticated: senderStanding(mail, rel).authenticated, linkHosts: [...new Set(mail.urls.map(u => u.host).filter(Boolean))],
+    priorMessages: rel.senderMessageCount, repliedBefore: rel.repliedTo, ...(files.length ? { attachments: files.slice(0, 10) } : {}),
+  };
 }
 
 export async function analyzeMessage(mail: ParsedMail, attachments: AttachmentInput[], opts: AnalyzeOptions = {}): Promise<SecurityResult> {
   const { security, files } = await analyzeWithFiles(mail, attachments, { ...opts, semantic: undefined });
   if (!opts.semantic) return security;
-  return applySemantic(security, opts.semantic, { subject: mail.subject, text: mail.visibleText || mail.text, fromDomain: emailDomain(mail.from?.address), attachments: files }, { ...DEFAULT_POLICY, ...opts.policy });
+  const policy = { ...DEFAULT_POLICY, ...opts.policy };
+  const read = await applySemantic(security, opts.semantic, { subject: mail.subject, text: mail.visibleText || mail.text, fromDomain: emailDomain(mail.from?.address), attachments: files }, policy);
+  return (await applyReview(read, opts.semantic, reviewFacts(mail, opts.relationship ?? EMPTY_RELATIONSHIP, files), policy)).security;
 }
 
 /** The deterministic result plus the attachment briefs, which cross the thread boundary so the AI step can see them. */

@@ -12,7 +12,7 @@ Before you put real mail on an instance, read [`STATUS.md`](STATUS.md). In short
 | A root key | Message content is encrypted under per-workspace keys, which are wrapped by one root key. You generate it with `openssl rand -base64 32`; AWS KMS can hold it instead. **Outside demo mode, the app refuses to start without one.** See [The root key](#the-root-key) |
 | An SMTP relay (strongly recommended) | Address verification, password reset, invitations and digests. Without one, those flows say they're unavailable, and nobody can verify their address, which inviting people requires |
 | OAuth clients for Gmail or Microsoft (optional) | Only for those providers. IMAP and SMTP mailboxes need nothing on the server |
-| An Anthropic API key (optional) | Hosted-model summaries, drafts and a second opinion on suspicious mail. Without it, local rules do this, and nothing leaves your server |
+| An OpenAI API key (optional; Anthropic also works) | A hosted model reviews every incoming message for attacks and decides on what the detectors flag, for every mailbox on the server, and writes summaries and drafts for people who turn that on. Without it, detectors and local rules do this, and no mail text leaves your server |
 
 ## Install
 ```sh
@@ -43,7 +43,7 @@ When `docker compose ps` shows `web` healthy, `curl -s http://127.0.0.1:3000/api
 
 ### The first user
 1. Open your `APP_ORIGIN` and choose **Sign up**. Pick a personal workspace or an organization: you become its owner. On an empty server the first account can always sign up.
-2. Confirm your address from the email. This needs the SMTP relay.
+2. Confirm your address from the email. This needs the SMTP relay. With no relay, connect the Gmail mailbox for that same address and it's verified on the spot, or run `pnpm operators verify <email>` on the server.
 3. Under Settings, Security, add an authenticator app or a passkey, and save the recovery codes.
 4. In an organization, invite people from the Organization pages.
 
@@ -120,7 +120,7 @@ Leave `/api/v1/webhooks/*` and `/api/v1/scim/*` reachable without any extra auth
 **IMAP and SMTP** (iCloud, Fastmail, Yahoo, your own server): nothing to configure. Users choose Connect in the app and enter an app password. iCloud has a guided setup.
 
 **Gmail.**
-1. In Google Cloud, create a project, enable the Gmail API, and configure the OAuth consent screen. In **Testing** status it works without Google's review for up to 100 test users that you list. Using Gmail's restricted scopes beyond that needs Google's verification, including a security assessment.
+1. In Google Cloud, create a project, enable the Gmail API, and configure the OAuth consent screen. In **Testing** status it works without Google's review for up to 100 test users that you list. Using Gmail's restricted scopes beyond that needs Google's verification, including a security assessment. Google expires the refresh tokens of a project in Testing status after 7 days, so each Gmail mailbox would ask to be reconnected weekly: set the publishing status to **In production** (it can stay unverified while you're under the user cap) to avoid that.
 2. Create an OAuth client of type **Web application** with the redirect URI `<APP_ORIGIN>/api/v1/oauth/gmail/callback`.
 3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. The app asks for `https://www.googleapis.com/auth/gmail.modify`, or `gmail.readonly` when a user connects read-only.
 4. Optional push, instead of polling: create a Pub/Sub topic, grant `gmail-api-push@system.gserviceaccount.com` the Publisher role on it, and create a push subscription to `<APP_ORIGIN>/api/v1/webhooks/gmail` with authentication turned on, using a service account you create for it. Set `GOOGLE_PUBSUB_TOPIC` (`projects/<project>/topics/<topic>`), `GOOGLE_PUBSUB_AUDIENCE` (the audience on the subscription) and `GOOGLE_PUBSUB_SERVICE_ACCOUNT` (that service account's email). Tokens from any other account are refused.
@@ -161,9 +161,11 @@ Set these in `.env`. `compose.yaml` passes each one to the services that use it,
 | `MICROSOFT_WEBHOOK_URL` | empty | worker | `<APP_ORIGIN>/api/v1/webhooks/graph`, for Graph change notifications |
 | `SIGNIN_GOOGLE_CLIENT_ID`, `SIGNIN_GOOGLE_CLIENT_SECRET` | empty | web | "Continue with Google" |
 | `SIGNIN_MICROSOFT_CLIENT_ID`, `SIGNIN_MICROSOFT_CLIENT_SECRET` | empty | web | "Continue with Microsoft" |
-| `ANTHROPIC_API_KEY` | empty | web, worker | Hosted model. Each user must also turn it on, in the Privacy Center |
-| `AEGIS_LLM_MODEL` | `claude-opus-5-5` | web, worker | Model name for the hosted model |
-| `AEGIS_LLM_BASE_URL` | empty | web, worker | An Anthropic-compatible endpoint to use instead of Anthropic's |
+| `OPENAI_API_KEY` | empty | web, worker | The hosted model. **With it set, the text of every incoming message is sent to OpenAI for security review, for every mailbox on the server, with no per-person opt-in**: the model reads each message and reviews every flag the detectors raise, so a false positive is delivered and its sender remembered, and a confirmed threat stays blocked. Tell the people whose mail it is. It also writes summaries and drafts, but only for people who turn that on in the Privacy Center. A workspace's administrators can turn hosted models off for their workspace. Without a key, the detectors decide alone and nothing is sent |
+| `ANTHROPIC_API_KEY` | empty | web, worker | The alternative provider, with the same behaviour. Used when it's the only key set, or with `AEGIS_LLM_PROVIDER=anthropic` |
+| `AEGIS_LLM_PROVIDER` | by key | web, worker | `openai` or `anthropic`, when both keys are set. OpenAI wins by default |
+| `AEGIS_LLM_MODEL` | `gpt-6.1-sol`, or `claude-opus-5-5` for Anthropic | web, worker | Model name. Every incoming message costs one call, and each flagged one a second, so the default is the balanced tier; `gpt-6-astra` is the flagship. A name that belongs to the other provider is ignored |
+| `AEGIS_LLM_BASE_URL` | empty | web, worker | An endpoint compatible with the chosen provider's API, to use instead of the provider's own |
 | `AEGIS_EMBEDDINGS` | empty | web, worker | `local` turns on semantic search. A small model (about 23 MB, `Xenova/all-MiniLM-L6-v2`) downloads once from huggingface.co into the `models` volume and runs inside web and worker. No mail leaves the server |
 | `AEGIS_REGION` | empty | web | Shown in the Privacy Center as where data is processed |
 | `AEGIS_SIGNUP` | `invite` | web | `invite`: the first account, then only addresses with a pending invitation. `open`: anyone who can reach the server. Any other value counts as `invite` |

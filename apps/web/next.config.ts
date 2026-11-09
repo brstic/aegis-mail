@@ -1,10 +1,11 @@
 import type { NextConfig } from "next";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 // The monorepo keeps one .env at the root; Next only auto-loads from this app's directory.
 const rootEnv = join(process.cwd(), "../../.env");
-if (existsSync(rootEnv)) for (const l of readFileSync(rootEnv, "utf8").split("\n")) { const m = l.match(/^([A-Z_0-9]+)=(.*)$/); if (m && process.env[m[1]!] === undefined) process.env[m[1]!] = m[2]; }
+// Node's own parser, the same one the worker's --env-file uses: it handles quotes, comments and Windows line endings.
+if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 
 const config: NextConfig = {
   poweredByHeader: false,

@@ -25,7 +25,7 @@ AI reads every message and opens every link, script and PDF before you do. Phish
 - 🛡️ **Protection that explains itself.** Every message gets a rating and the reasons behind it, in plain words. Dangerous mail is held out of the inbox, reversibly.
 - 🎯 **Focus, not noise.** Mail is ranked by who it's from and what it asks, *after* security analysis, so a scam can't shout "URGENT" its way to the top.
 - 🔐 **Your server, your keys.** Message content is encrypted under per-workspace keys, wrapped by a root key you hold. Admins can't read members' mail, and the database enforces it.
-- 🧠 **AI that stays home by default.** Summaries, tasks and drafts work with local rules that never send mail anywhere. A hosted model is opt-in, per person.
+- 🧠 **AI that stays home by default.** With no AI key, everything runs on your server and no mail text leaves it. Add an OpenAI key and a model reviews every message for attacks.
 - 📬 **Every mailbox in one place.** Gmail and Microsoft 365 over OAuth, iCloud, Fastmail, Yahoo or any IMAP server, with the sending account always shown.
 
 ## Screenshots
@@ -72,7 +72,7 @@ AI reads every message and opens every link, script and PDF before you do. Phish
 | **Attachment inspection** | PDFs are decoded and checked for JavaScript, auto-run and launch actions and embedded files; Office files for macros, remote templates and DDE; RTF, HTML and SVG for exploits, sign-in forms and smuggling. Optional ClamAV scanning, included in the Docker stack. |
 | **Focus** | Ranking by sender relationship and what the message asks, applied after security analysis. Every row answers "why am I seeing this?". |
 | **Search** | Gmail-style operators (`from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `before:`, `after:`, `label:` and more), plus optional semantic search with a small model that runs on your server. |
-| **Summaries, tasks and drafts** | Local rules by default. With an Anthropic API key, and only for people who turn it on, a hosted model writes summaries and drafts and adds a second opinion on suspicious mail. Nothing is sent without your approval. |
+| **Summaries, tasks and drafts** | Local rules by default. With an OpenAI key on the server (Anthropic also works), a hosted model reviews every incoming message for attacks and decides on what the detectors flag. It writes summaries and drafts for the people who turn that on. Nothing is sent without your approval. |
 | **Rules and automations** | Plain-English or form-based rules with a dry run, an approval queue and limits. |
 | **Organizations** | Roles, policies, verified domains, OIDC and SAML single sign-on, SCIM provisioning, delegated and shared mailboxes, an audit log, and a Security Center built on aggregates only. |
 | **Accounts** | Passwords (Argon2id), passkeys, and authenticator apps with recovery codes. Sign-up is by invitation on a production server. |

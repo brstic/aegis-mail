@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { FolderRole, MailChange, RemoteState, SecurityResult } from "@aegis/domain";
 import type { AttachmentInput, FileBrief } from "@aegis/security-engine";
-import { CursorExpiredError, DEFAULT_POLICY, GrantRevokedError, RateLimitedError, type TenantPolicy } from "@aegis/domain";
+import { CursorExpiredError, DEFAULT_POLICY, GrantRevokedError, RateLimitedError, UnsupportedOperationError, type TenantPolicy } from "@aegis/domain";
 import type { Tx } from "@aegis/db";
 import { emailDomain, makeSnippet, MessageParseError, MessageTooLargeError, normalizeSubject, parseMail, type ParsedMail } from "@aegis/mail-parser";
-import { analyzeMessage, applySemantic, BaselineScanner, ClamdScanner, ENGINE_VERSION, EMPTY_RELATIONSHIP, extractAttachmentText, FREE_MAIL, registrableDomain, type RelationshipContext, type SemanticClassifier } from "@aegis/security-engine";
-import { AnthropicProvider, extractActions } from "@aegis/ai-core";
+import { analyzeWithFiles, applyReview, applySemantic, BaselineScanner, ClamdScanner, ENGINE_VERSION, EMPTY_RELATIONSHIP, extractAttachmentText, FREE_MAIL, registrableDomain, reviewFacts, type RelationshipContext, type ReviewOutcome, type SemanticClassifier } from "@aegis/security-engine";
+import { extractActions, hostedProvider, type HostedProvider } from "@aegis/ai-core";
+import { recordAiUsage } from "./ai-usage";
 import { IsolatedPool, IsolationCrashError, IsolationTimeoutError } from "./isolate";
 import { adapterFor, loadAccount } from "./accounts";
 import { audit } from "./audit";
@@ -35,6 +36,7 @@ function scannerConfig(p: Platform) {
 const rewrapMail = (m: ParsedMail): ParsedMail => ({ ...m, attachments: m.attachments.map(a => ({ ...a, content: Buffer.from(a.content) })) });
 const FULL_SYNC_WINDOW_DAYS = 30;
 const PAGE_SIZE = 25;
+const MAX_PAGES_PER_RUN = 200;
 /** Attachments up to this size are stored, encrypted, for later download. */
 const MAX_STORED_ATTACHMENT = 10 * 1024 * 1024;
 
@@ -59,9 +61,11 @@ export async function syncAccount(p: Platform, tenantId: string, accountId: stri
   let cursor = initial.state?.cursor_enc ? (await p.envelope.open(cursorCtx, initial.state.cursor_enc)).toString("utf8") : undefined;
   let phase: string = initial.state?.phase ?? "initial";
   await p.db.withWorker(tenantId, t => t.query("UPDATE sync_states SET last_attempt_at=now() WHERE account_id=$1", [accountId]));
+  // A mailbox bigger than one run carries on in the next, straight away.
+  let more = false;
   try {
     let processed = 0;
-    for (let pageNo = 0; pageNo < 200; pageNo++) {
+    for (let pageNo = 0; pageNo < MAX_PAGES_PER_RUN; pageNo++) {
       let page;
       try {
         page = phase === "incremental" && cursor
@@ -74,16 +78,20 @@ export async function syncAccount(p: Platform, tenantId: string, accountId: stri
       // Upserts first, so a message moved by another client can be recognized while its old row still exists.
       const gone = new Set(page.changes.filter(c => c.type === "delete").map(c => c.remoteId));
       const ordered = account.kind === "imap" && gone.size ? [...page.changes.filter(c => c.type !== "delete"), ...page.changes.filter(c => c.type === "delete")] : page.changes;
-      for (const change of ordered) { await applyChange(p, account, adapter, change, account.kind === "imap" ? gone : undefined); processed++; }
+      let arrived = 0;
+      for (const change of ordered) { await applyChange(p, account, adapter, change, account.kind === "imap" ? gone : undefined); processed++; if (change.type === "upsert") arrived++; }
       cursor = page.cursor;
       const nextPhase = page.hasMore ? phase : "incremental";
       if (phase === "reconciling" && !page.hasMore && cursor && adapter.isRemoteIdCurrent) processed += await sweepStaleIds(p, account, adapter, cursor);
-      await saveCursor(p, tenantId, accountId, cursor, nextPhase);
+      // The count moves with the cursor, page by page, so a long first sync shows progress and a failed run keeps what it did.
+      await saveCursor(p, tenantId, accountId, cursor, nextPhase, arrived);
       phase = nextPhase;
+      more = page.hasMore;
       if (!page.hasMore) break;
     }
-    await p.db.withWorker(tenantId, t => t.query("UPDATE sync_states SET last_success_at=now(), last_error_code=NULL, consecutive_failures=0, messages_synced=messages_synced+$2 WHERE account_id=$1", [accountId, processed]));
+    await p.db.withWorker(tenantId, t => t.query("UPDATE sync_states SET last_success_at=now(), last_error_code=NULL, consecutive_failures=0 WHERE account_id=$1", [accountId]));
     p.log.info("sync.done", { accountId, count: processed, latencyMs: Date.now() - t0, provider: account.kind });
+    if (await staleHeldCount(p, tenantId, accountId)) await p.db.withSystem(t => enqueue(t, { tenantId, kind: "quarantine.recheck", payload: { accountId }, dedupeKey: `recheck:${accountId}` }));
   } catch (e) {
     if (e instanceof GrantRevokedError) {
       // Stop rather than retry: repeated silent failures are worse than a clear prompt to reconnect.
@@ -96,14 +104,104 @@ export async function syncAccount(p: Platform, tenantId: string, accountId: stri
     }
     if (e instanceof RateLimitedError) throw new DeferJob((e.retryAfterSeconds ?? 60) * 1000);
     const code = errorCode(e);
-    await p.db.withWorker(tenantId, async t => {
-      await t.query("UPDATE sync_states SET last_error_code=$2, consecutive_failures=consecutive_failures+1 WHERE account_id=$1", [accountId, code]);
+    const failures = await p.db.withWorker(tenantId, async t => {
+      const r = await t.one<{ consecutive_failures: number }>("UPDATE sync_states SET last_error_code=$2, consecutive_failures=consecutive_failures+1 WHERE account_id=$1 RETURNING consecutive_failures", [accountId, code]);
       await audit(t, { tenantId, event: "provider.sync_failed", targetType: "account", targetId: accountId, meta: { provider: account.kind, code } });
+      return r?.consecutive_failures ?? 0;
     });
+    // A password that stopped working doesn't start again by itself, and retrying it for ever can lock the mailbox at the
+    // provider. Three refusals in a row ask the owner to reconnect, the same as a revoked OAuth grant.
+    if (code === "auth_failed" && failures >= 3) {
+      await p.db.withWorker(tenantId, async t => {
+        await t.query("UPDATE mail_accounts SET status='reconnect_required', status_detail=$2 WHERE id=$1", [accountId, "The mail server rejected the saved password. Reconnect to resume."]);
+        await audit(t, { tenantId, event: "token.revoked", targetType: "account", targetId: accountId, meta: { provider: account.kind, code } });
+      });
+      throw new PermanentJobError("auth_failed");
+    }
     throw e;
   } finally {
     await adapter.close?.().catch(() => {});
   }
+  if (more) throw new DeferJob(500, true);
+}
+
+/** Held mail whose last verdict came from an older engine, which the owner hasn't reported themselves. */
+const STALE_HELD = `FROM quarantine_items q JOIN messages m ON m.id=q.message_id
+  WHERE q.account_id=$1 AND q.state='held' AND m.held AND m.tombstoned_at IS NULL AND m.state='classified'
+    AND NOT EXISTS (SELECT 1 FROM security_analyses s WHERE s.message_id=m.id AND s.engine_version=$2)
+    AND NOT EXISTS (SELECT 1 FROM user_feedback f WHERE f.message_id=m.id AND f.kind='report_phishing')`;
+async function staleHeldCount(p: Platform, tenantId: string, accountId: string) {
+  return (await p.db.withWorker(tenantId, t => t.one<{ c: number }>(`SELECT count(*)::int c ${STALE_HELD}`, [accountId, ENGINE_VERSION])))?.c ?? 0;
+}
+
+/**
+ * Looks again at mail that an older engine held. Each message is fetched from the provider and judged afresh, by the
+ * detectors and, where it's on, the AI. One that no longer warrants holding is released to where it was, here and at
+ * the provider. One that still does gets its new verdict recorded, so it's only looked at once per engine version.
+ */
+export async function recheckHeld(p: Platform, tenantId: string, accountId: string, limit = 40) {
+  const rows = await p.db.withWorker(tenantId, t => t.query<{ id: string; provider_message_id: string; thread_id: string | null; sender_hash: string | null; sender_domain_hash: string | null; original_folder_role: FolderRole; provider_moved: boolean }>(
+    `SELECT m.id, m.provider_message_id, m.thread_id, m.sender_hash, m.sender_domain_hash, q.original_folder_role, q.provider_moved ${STALE_HELD} ORDER BY m.internal_date DESC LIMIT $3`, [accountId, ENGINE_VERSION, limit]));
+  if (!rows.length) return { checked: 0, released: 0 };
+  const { adapter, account } = await adapterFor(p, tenantId, accountId);
+  const { policy } = await p.db.withWorker(tenantId, t => loadPolicy(t, tenantId));
+  let checked = 0, released = 0;
+  try {
+    for (const row of rows) {
+      let outcome: ReviewOutcome, from: ParsedMail["from"];
+      try {
+        const raw = Buffer.from(await adapter.fetchRaw(row.provider_message_id));
+        const parsed = await analysisPool().run<{ ok: boolean; mail?: ParsedMail }>({ op: "parse", raw });
+        if (!parsed.ok || !parsed.mail) continue;
+        const mail = rewrapMail(parsed.mail);
+        from = mail.from;
+        const rel = await relationshipFor(p, account, row.sender_hash, row.sender_domain_hash, row.thread_id, { messageId: row.id, fromFreeMail: FREE_MAIL.has(registrableDomain(emailDomain(from?.address))) });
+        outcome = await analyzeIsolated(p, account, mail, mail.attachments.map(a => ({ filename: a.filename, contentType: a.contentType, size: a.size, sha256: a.sha256, content: a.content })), rel, policy);
+      } catch (e) {
+        if (e instanceof RateLimitedError || e instanceof GrantRevokedError) throw e;
+        // Gone at the provider, or unreadable now. Sync deals with the first; the second stays held.
+        p.log.warn("quarantine.recheck_skipped", { messageId: row.id, errorCode: errorCode(e) });
+        continue;
+      }
+      const { security, exception } = outcome;
+      const detailEnc = await p.envelope.sealJson(msgCtx(tenantId, row.id, "security_analyses"), { summary: security.summary, actionRationale: security.actionRationale, evidence: security.evidence });
+      const release = security.action !== "quarantine";
+      const done = await p.db.withWorker(tenantId, async t => {
+        // The owner may have decided while this was running. Their decision stands.
+        const cur = await t.one<{ state: string }>("SELECT state FROM quarantine_items WHERE message_id=$1 FOR UPDATE", [row.id]);
+        if (cur?.state !== "held") return false;
+        await t.query(
+          `INSERT INTO security_analyses(tenant_id,account_id,message_id,engine_version,threat_probability,severity,evidence_completeness,label,action,reason_codes,categories,provenance,detail_enc)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (message_id, engine_version) DO NOTHING`,
+          [tenantId, accountId, row.id, security.engineVersion, security.threatProbability, security.severity, security.evidenceCompleteness, security.label, security.action, security.evidence.map(e => e.code), security.categories, security.provenance, detailEnc]);
+        if (!release) { await t.query("UPDATE messages SET risk_label=$2, policy_action=$3, updated_at=now() WHERE id=$1", [row.id, security.label, security.action]); return true; }
+        const flagged = ["suspicious", "high_risk", "malicious"].includes(security.label);
+        await t.query("UPDATE quarantine_items SET state='released', decided_at=now() WHERE message_id=$1", [row.id]);
+        await t.query("UPDATE messages SET held=false, folder_role=$2, risk_label=$3, policy_action=$4, priority_section=$5, updated_at=now() WHERE id=$1",
+          [row.id, row.original_folder_role, security.label, security.action, flagged ? "security_review" : "read_later"]);
+        await audit(t, { tenantId, event: "message.released", targetType: "message", targetId: row.id, meta: { outcome: "release", by: "recheck", label: security.label } });
+        if (exception && row.sender_hash && from) await recordException(p, t, { tenantId, accountId, messageId: row.id, senderHash: row.sender_hash, domainHash: row.sender_domain_hash, from, scope: exception, by: "ai" });
+        await recountThread(t, row.thread_id);
+        return true;
+      });
+      if (!done) continue;
+      checked++;
+      if (release) {
+        released++;
+        if (row.provider_moved && !account.read_only) await p.db.withSystem(t => enqueue(t, { tenantId, kind: "provider.change", payload: { accountId, messageId: row.id, change: { moveToRole: row.original_folder_role }, reason: "release" } }));
+      }
+    }
+  } catch (e) {
+    if (e instanceof RateLimitedError) throw new DeferJob((e.retryAfterSeconds ?? 60) * 1000);
+    throw e;
+  } finally {
+    await adapter.close?.().catch(() => {});
+  }
+  p.log.info("quarantine.recheck_done", { accountId, count: checked, released });
+  // More than one batch: carry on, unless nothing in this one could be read.
+  // No dedupe key: this job still holds the one sync uses, and a keyed insert would be dropped as its own duplicate.
+  if (checked && await staleHeldCount(p, tenantId, accountId)) await p.db.withSystem(t => enqueue(t, { tenantId, kind: "quarantine.recheck", payload: { accountId } }));
+  return { checked, released };
 }
 
 /** After a reconcile, a row whose id belongs to an expired generation names nothing, and the reissued copy has its own row. */
@@ -114,9 +212,9 @@ async function sweepStaleIds(p: Platform, account: AccountRow, adapter: { isRemo
   return stale.length;
 }
 
-async function saveCursor(p: Platform, tenantId: string, accountId: string, cursor: string | undefined, phase: string) {
+async function saveCursor(p: Platform, tenantId: string, accountId: string, cursor: string | undefined, phase: string, arrived = 0) {
   const enc = cursor === undefined ? null : await p.envelope.seal({ tenantId, keyClass: "metadata", table: "sync_states", recordId: accountId }, cursor);
-  await p.db.withWorker(tenantId, t => t.query("UPDATE sync_states SET cursor_enc=$2, phase=$3 WHERE account_id=$1", [accountId, enc, phase]));
+  await p.db.withWorker(tenantId, t => t.query("UPDATE sync_states SET cursor_enc=$2, phase=$3, messages_synced=messages_synced+$4 WHERE account_id=$1", [accountId, enc, phase, arrived]));
 }
 
 async function applyState(t: Tx, accountId: string, remoteId: string, s: Partial<RemoteState>) {
@@ -149,7 +247,20 @@ export async function applyChange(p: Platform, account: AccountRow, adapter: { f
   }
   // A fetch failure is the provider's and worth retrying. A failure processing this message is about this message:
   // it's marked for the owner and the mailbox moves on, so one bad email can never stall sync or scanning.
-  const raw = change.raw ?? await adapter.fetchRaw(change.remoteId);
+  let raw: Uint8Array;
+  try { raw = change.raw ?? await adapter.fetchRaw(change.remoteId); }
+  catch (e) {
+    // Some messages can't be fetched at all: over the size limit, or on a protocol with no second fetch. That's about the
+    // message, not the connection, so it's recorded as unread-by-us and the mailbox moves on. Anything else is retried.
+    if (!(e instanceof UnsupportedOperationError) && errorCode(e) !== "protocol_error") throw e;
+    p.log.warn("message.unfetchable", { accountId: account.id, errorCode: errorCode(e) });
+    await p.db.withWorker(tenantId, t => t.query(
+      `INSERT INTO messages(tenant_id,account_id,provider_message_id,internal_date,folder_role,is_read,is_starred,size_bytes,state,failure_code,risk_label,policy_action,priority_section,ingestion_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,0,'failed','unfetchable','unknown_unscannable','warn','security_review',$8)
+       ON CONFLICT (account_id, provider_message_id) DO NOTHING`,
+      [tenantId, account.id, change.remoteId, change.internalDate, change.state.folderRole, change.state.isRead, change.state.isStarred, INGESTION_VERSION]));
+    return;
+  }
   try {
     if (!existing && goneInThisPage?.size && await followMove(p, account, change, Buffer.from(raw), goneInThisPage)) return;
     await processMessage(p, account, change, Buffer.from(raw), existing?.id);
@@ -192,14 +303,19 @@ function buildEnvelope(mail: ParsedMail, internalDate: string, isBulk: boolean, 
   };
 }
 
-async function relationshipFor(p: Platform, account: AccountRow, senderHash: string | null, domainHash: string | null, threadId: string | null): Promise<RelationshipContext & { contact: any; ownerName: string; prefs: any }> {
+async function relationshipFor(p: Platform, account: AccountRow, senderHash: string | null, domainHash: string | null, threadId: string | null, self?: { messageId: string; fromFreeMail: boolean }): Promise<RelationshipContext & { contact: any; ownerName: string; prefs: any }> {
   const tenantId = account.tenant_id;
-  const { contact, domainCount, identities, threadEnvs, owner, verified, prefs } = await p.db.withWorker(tenantId, async t => ({
+  const { contact, domainCount, identities, threadEnvs, owner, verified, prefs, mailboxes, domainTrusted } = await p.db.withWorker(tenantId, async t => ({
     contact: senderHash ? await t.one<any>("SELECT * FROM contacts WHERE account_id=$1 AND sender_hash=$2", [account.id, senderHash]) : null,
-    domainCount: domainHash ? (await t.one<{ c: number }>("SELECT COALESCE(sum(received_count),0)::int c FROM contacts WHERE account_id=$1 AND domain_hash=$2", [account.id, domainHash]))?.c ?? 0 : 0,
+    // Everyone at a free mail domain shares it, so one known Gmail address doesn't make the next one familiar.
+    domainCount: domainHash && !self?.fromFreeMail ? (await t.one<{ c: number }>("SELECT COALESCE(sum(received_count),0)::int c FROM contacts WHERE account_id=$1 AND domain_hash=$2", [account.id, domainHash]))?.c ?? 0 : 0,
     // received_count only counts mail that wasn't flagged, so an attacker can't earn a place here by being quarantined.
     identities: await t.query<any>("SELECT id, identity_enc FROM contacts WHERE account_id=$1 AND identity_enc IS NOT NULL AND (received_count>=2 OR sent_to_count>0) ORDER BY last_seen_at DESC LIMIT 100", [account.id]),
-    threadEnvs: threadId ? await t.query<any>("SELECT id, envelope_enc FROM messages WHERE thread_id=$1 AND envelope_enc IS NOT NULL ORDER BY internal_date DESC LIMIT 6", [threadId]) : [],
+    threadEnvs: threadId ? await t.query<any>("SELECT id, envelope_enc FROM messages WHERE thread_id=$1 AND envelope_enc IS NOT NULL AND id IS DISTINCT FROM $2 ORDER BY internal_date DESC LIMIT 6", [threadId, self?.messageId ?? null]) : [],
+    // Every mailbox the owner connected. Mail between them is the owner writing to themselves.
+    mailboxes: await t.query<{ email: string; settings: any }>("SELECT email, settings FROM mail_accounts WHERE owner_user_id=$1", [account.owner_user_id]),
+    // A domain-wide exception recorded on any contact at this domain. Never honoured for free mail, whatever the row says.
+    domainTrusted: domainHash && !self?.fromFreeMail ? (await t.one("SELECT 1 FROM contacts WHERE account_id=$1 AND domain_hash=$2 AND trusted_scope='domain' AND trusted_at IS NOT NULL LIMIT 1", [account.id, domainHash])) != null : false,
     owner: await t.one<any>("SELECT name FROM users WHERE id=$1", [account.owner_user_id]),
     verified: await t.query<any>("SELECT domain FROM verified_domains WHERE verified_at IS NOT NULL"),
     prefs: (await t.one<any>("SELECT prefs FROM user_preferences WHERE user_id=$1", [account.owner_user_id]))?.prefs ?? {},
@@ -217,39 +333,72 @@ async function relationshipFor(p: Platform, account: AccountRow, senderHash: str
     const d = emailDomain(e.from?.address);
     if (d && e.from?.address !== account.email) threadDomains.add(registrableDomain(d));
   }
-  const ownDomain = emailDomain(account.email);
-  const ownDomains = [...verified.map(v => v.domain as string), ...(ownDomain && !FREE_MAIL.has(registrableDomain(ownDomain)) ? [ownDomain] : [])];
+  const ownAddresses = [...new Set(mailboxes.flatMap(m => [m.email, ...((m.settings?.aliases ?? []) as { address: string }[]).map(a => a.address)]).filter(Boolean).map(a => a.toLowerCase()))];
+  const ownDomains = [...new Set([...verified.map(v => v.domain as string), ...[account.email, ...mailboxes.map(m => m.email)].map(e => emailDomain(e)).filter(d => d && !FREE_MAIL.has(registrableDomain(d)))])];
   return {
     ...EMPTY_RELATIONSHIP,
     senderMessageCount: contact?.received_count ?? 0, domainMessageCount: domainCount, repliedTo: (contact?.sent_to_count ?? 0) > 0, isVip: !!contact?.is_vip,
     threadKnown: threadEnvs.length > 0, threadDomains: [...threadDomains], knownDomains: [...knownDomains], knownNames, ownDomains, ownerNames: owner?.name ? [owner.name.toLowerCase()] : [],
+    ownAddresses, senderTrusted: !!contact?.trusted_at || domainTrusted,
     contact, ownerName: owner?.name ?? "", prefs,
   };
 }
 
-async function analyzeIsolated(p: Platform, account: AccountRow, mail: ParsedMail, atts: AttachmentInput[], rel: any, policy: TenantPolicy): Promise<SecurityResult> {
-  const semantic = semanticFor(p, account, rel.prefs, policy);
+/**
+ * Detectors first, on a killable thread. Then the AI, when the owner has it on: it reads the message itself, and when the
+ * detectors flagged something it decides whether they were right. A false positive it's confident about is delivered,
+ * and `exception` says how far to remember that.
+ */
+async function analyzeIsolated(p: Platform, account: AccountRow, mail: ParsedMail, atts: AttachmentInput[], rel: any, policy: TenantPolicy): Promise<ReviewOutcome> {
+  const semantic = semanticFor(p, account, policy);
   const { contact: _c, ownerName: _o, prefs: _p, ...relationship } = rel;
   const scanner = scannerConfig(p);
+  let detected: { security: SecurityResult; files: FileBrief[] };
   // A custom scanner only exists in tests; it can't cross the thread boundary.
-  if (!scanner) return analyzeMessage(mail, atts, { relationship, policy, scanner: p.scanner, semantic, attachmentTexts: mail.attachments.map(extractAttachmentText) });
-  const out = await analysisPool().run<{ ok: boolean; security?: SecurityResult; files?: FileBrief[]; error?: string }>({ op: "analyze", mail, relationship, policy, scanner });
-  if (!out.ok || !out.security) throw new IsolationCrashError(out.error ?? "analysis failed");
-  return semantic ? applySemantic(out.security, semantic, { subject: mail.subject, text: mail.visibleText || mail.text, fromDomain: emailDomain(mail.from?.address), attachments: out.files ?? [] }, policy) : out.security;
+  if (!scanner) detected = await analyzeWithFiles(mail, atts, { relationship, policy, scanner: p.scanner, attachmentTexts: mail.attachments.map(extractAttachmentText) });
+  else {
+    const out = await analysisPool().run<{ ok: boolean; security?: SecurityResult; files?: FileBrief[]; error?: string }>({ op: "analyze", mail, relationship, policy, scanner });
+    if (!out.ok || !out.security) throw new IsolationCrashError(out.error ?? "analysis failed");
+    detected = { security: out.security, files: out.files ?? [] };
+  }
+  if (!semantic) return { security: detected.security, verdict: "unavailable", exception: null };
+  const read = await applySemantic(detected.security, semantic, { subject: mail.subject, text: mail.visibleText || mail.text, fromDomain: emailDomain(mail.from?.address), attachments: detected.files }, policy);
+  return applyReview(read, semantic, reviewFacts(mail, relationship as RelationshipContext, detected.files), policy);
 }
 
 /**
- * The optional semantic step. Message text only leaves this deployment when the mailbox owner opted in and the tenant
- * hasn't disabled hosted models. The engine bounds its effect: it can raise risk, never lower it or choose an action.
+ * Records that mail from this sender was cleared, so it isn't flagged for looking unfamiliar again. Domain-wide never
+ * applies to free mail. A new contact row is always created with its identity, sealed under its own id.
  */
-function semanticFor(p: Platform, account: AccountRow, prefs: any, policy: TenantPolicy & { hostedModelsDisabled?: boolean }): SemanticClassifier | undefined {
+export async function recordException(p: Platform, t: Tx, o: { tenantId: string; accountId: string; messageId: string; senderHash: string; domainHash: string | null; from: { name?: string; address: string }; scope: "sender" | "domain"; by: "ai" | "user" }) {
+  const fromDomain = emailDomain(o.from.address);
+  const scope = o.scope === "domain" && o.domainHash && fromDomain && !FREE_MAIL.has(registrableDomain(fromDomain)) ? "domain" : "sender";
+  const existing = await t.one<{ id: string }>("SELECT id FROM contacts WHERE account_id=$1 AND sender_hash=$2 FOR UPDATE", [o.accountId, o.senderHash]);
+  if (existing) await t.query("UPDATE contacts SET trusted_at=now(), trusted_scope=$2, trusted_by=$3 WHERE id=$1", [existing.id, scope, o.by]);
+  else {
+    const id = randomUUID();
+    const identity = await p.envelope.sealJson({ tenantId: o.tenantId, keyClass: "metadata", table: "contacts", recordId: id }, { name: o.from.name, address: o.from.address });
+    await t.query("INSERT INTO contacts(id,tenant_id,account_id,sender_hash,domain_hash,identity_enc,trusted_at,trusted_scope,trusted_by) VALUES ($1,$2,$3,$4,$5,$6,now(),$7,$8)", [id, o.tenantId, o.accountId, o.senderHash, o.domainHash, identity, scope, o.by]);
+  }
+  await audit(t, { tenantId: o.tenantId, event: "sender.exception_added", targetType: "message", targetId: o.messageId, meta: { scope, by: o.by } });
+}
+
+/**
+ * The AI's part in security. It runs whenever this server has a hosted model configured: for every mailbox, whatever
+ * the mailbox owner's own AI settings say. Whoever runs the server made that choice by setting the key, and a check
+ * that only some mailboxes get isn't protection. A workspace's administrators can still turn hosted models off for
+ * the whole workspace, which leaves its mail to the detectors alone.
+ *
+ * The engine bounds what the model can do. Its reading of a message can only add risk. Its review of a detector flag
+ * can clear a false positive, but never malware, a forged sender, a blocked domain, or mail that tries to instruct it;
+ * and it never chooses an action.
+ */
+function semanticFor(p: Platform, account: AccountRow, policy: TenantPolicy & { hostedModelsDisabled?: boolean }): SemanticClassifier | undefined {
   if (p.semantic) return p.semantic;
-  if (prefs?.aiEnabled === false || prefs?.hostedModelConsent !== true || policy.hostedModelsDisabled === true) return undefined;
-  const override = p.inferenceOverride?.({ tenantId: account.tenant_id, userId: account.owner_user_id });
-  const provider = override ?? (p.config.anthropicApiKey ? new AnthropicProvider({ apiKey: p.config.anthropicApiKey, baseURL: p.config.llmBaseUrl, model: p.config.llmModel, onUsage: u => {
-    void p.db.withWorker(account.tenant_id, t => t.query("INSERT INTO ai_usage(tenant_id,user_id,provider,model,purpose,input_tokens,output_tokens,latency_ms) VALUES ($1,$2,'anthropic',$3,$4,$5,$6,$7)", [account.tenant_id, account.owner_user_id, p.config.llmModel ?? "claude-opus-5-5", u.purpose, u.inputTokens, u.outputTokens, u.latencyMs])).catch(() => {});
-  } }) : null);
-  return provider && "semanticClassifier" in provider ? (provider as AnthropicProvider).semanticClassifier() : undefined;
+  if (policy.hostedModelsDisabled === true) return undefined;
+  const who = { tenantId: account.tenant_id, userId: account.owner_user_id };
+  const provider = p.inferenceOverride?.(who) ?? (p.config.ai ? hostedProvider(p.config.ai, u => { void recordAiUsage(p, "worker", who, u).catch(() => {}); }) : null);
+  return provider && "semanticClassifier" in provider ? (provider as HostedProvider).semanticClassifier() : undefined;
 }
 
 /** Conservative threading: provider ID, else References/In-Reply-To with the same normalized subject. */
@@ -322,16 +471,18 @@ async function processMessage(p: Platform, account: AccountRow, change: Extract<
 
   // Thread must exist before relationship analysis so reply-chain signals can see earlier messages.
   const preThread = await p.db.withWorker(tenantId, t => findOrCreateThread(p, t, account, { remoteThreadId: change.remoteThreadId, refHashes, subjectHash, date: change.internalDate }));
-  const rel = await relationshipFor(p, account, senderHash, domainHash, preThread.id);
+  const fromDomain = emailDomain(mail.from?.address);
+  const rel = await relationshipFor(p, account, senderHash, domainHash, preThread.id, { messageId: id, fromFreeMail: FREE_MAIL.has(registrableDomain(fromDomain)) });
 
   const { policy } = await p.db.withWorker(tenantId, t => loadPolicy(t, tenantId));
   const storeAttachments = rel.prefs?.storeAttachments !== false;
   const atts = mail.attachments.map(a => ({ filename: a.filename, contentType: a.contentType, size: a.size, sha256: a.sha256, content: a.content }));
 
   // ---- Security first. Priority below can't change this outcome. ----
-  let security: SecurityResult;
+  let security: SecurityResult, exception: ReviewOutcome["exception"] = null;
   try {
-    security = fromMe ? SAFE_SENT : await analyzeIsolated(p, account, mail, atts, rel, policy);
+    if (fromMe) security = SAFE_SENT;
+    else ({ security, exception } = await analyzeIsolated(p, account, mail, atts, rel, policy));
   } catch (e) {
     if (e instanceof IsolationTimeoutError || e instanceof IsolationCrashError) return markUnscannable(e.name);
     throw e;
@@ -344,7 +495,7 @@ async function processMessage(p: Platform, account: AccountRow, change: Extract<
   const priorityInput: PriorityInput = {
     subject: mail.subject, text: mail.visibleText || mail.text, fromName: mail.from?.name, riskLabel: security.label, isBulk, autoGenerated, fromMe,
     received: rel.contact?.received_count ?? 0, sentTo: rel.contact?.sent_to_count ?? 0, replied: rel.contact?.replied_count ?? 0, dismissed: rel.contact?.dismissed_count ?? 0,
-    isVip: rel.isVip, isIgnored: !!rel.contact?.is_ignored, threadHasMyReply, personalizationEnabled: prefs.personalizationEnabled !== false, now: p.now(),
+    isVip: rel.isVip, isIgnored: !!rel.contact?.is_ignored, threadHasMyReply, personalizationEnabled: prefs.personalizationEnabled !== false, now: p.now(), sentAt: new Date(change.internalDate),
     // The owner's own settings. Bounded by computePriority, and a flagged message still scores zero whatever they say.
     userBoost: Math.max(0, Number(prefs.accountRanking?.[account.id] ?? 0)), weights: prefs.priorityWeights,
     accountPenalty: Math.max(0, -Number(prefs.accountRanking?.[account.id] ?? 0)),
@@ -424,6 +575,7 @@ async function processMessage(p: Platform, account: AccountRow, change: Extract<
          ON CONFLICT (account_id, sender_hash) DO UPDATE SET received_count=contacts.received_count+1, last_seen_at=GREATEST(contacts.last_seen_at, EXCLUDED.last_seen_at)`,
         [contactId, tenantId, account.id, senderHash, domainHash, fromIdentity, change.internalDate]);
     }
+    if (exception && senderHash && mail.from && !fromMe) await recordException(p, t, { tenantId, accountId: account.id, messageId: id, senderHash, domainHash, from: mail.from, scope: exception, by: "ai" });
     for (const [i, x] of recipientRows.entries()) {
       await t.query(
         `INSERT INTO contacts(id,tenant_id,account_id,sender_hash,domain_hash,identity_enc,sent_to_count,last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,1,$7)

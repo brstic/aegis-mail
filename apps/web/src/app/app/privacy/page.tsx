@@ -12,7 +12,7 @@ interface Privacy {
   mode: { id: string; name: string; claim: string; plain: string; notClaimed: string[] };
   processors: { name: string; purpose: string; plaintext: boolean; condition: string; caveat?: string }[];
   keys: { provider: string; productionSafe: boolean; classes: { class: string; version: number }[]; recovery: string; warning: string | null };
-  model: { id: string; model: string; hosted: boolean; hostedConfigured: boolean; consent: boolean; training: string; retention: string };
+  model: { id: string; model: string; hosted: boolean; hostedConfigured: boolean; consent: boolean; securityReview: { model: string; provider: string } | null; training: string; retention: string };
   connections: { id: string; kind: string; email: string; displayName: string; readOnly: boolean; status: string; simulated: string | null; credential: string; scopes: string[]; grantedAt: string | null; limitations: string[]; revokeSupported: boolean }[];
   controls: { aiEnabled: boolean; summariesEnabled: boolean; topicsEnabled: boolean; storeAttachments: boolean; personalizationEnabled: boolean; hostedModelConsent: boolean; serverSearchEnabled: boolean; semanticSearchEnabled: boolean };
   region: string | null;
@@ -37,7 +37,7 @@ const CLAIMS: { claim: string; a: Cell; b: Cell; c: Cell }[] = [
   { claim: "The operator can't retrieve your mail at all", a: no(), b: no("No. Server-held provider tokens can fetch it again until you disconnect"), c: no("No, unless key release is independent of the operator") },
   { claim: "Scans new mail around the clock", a: yes(), b: part("Before sealing only. Sealed bodies aren't analyzed again"), c: part("Yes, if scanners run inside the boundary") },
   { claim: "Server-side search", a: yes("Yes, using unencrypted search words. You can turn this off. Semantic search, where a deployment enables it, uses encrypted vectors that the server opens in memory"), b: part("Sealed messages can't be searched on the server"), c: part("Inside the boundary") },
-  { claim: "A hosted AI model sees content", a: part("Only if you turn it on"), b: part("Only if you act on one message"), c: part("Disclosed if outside the boundary") },
+  { claim: "A hosted AI model sees content", a: part("For security review, whenever this server has one set up. For summaries and drafts, only if you turn it on"), b: part("Only if you act on one message"), c: part("Disclosed if outside the boundary") },
 ];
 
 function ClaimCell({ c }: { c: Cell }) {
@@ -93,13 +93,13 @@ function Controls({ d }: { d: Privacy }) {
   return (
     <Card title="Your controls" description="These apply to your own mail and take effect right away.">
       <div className="divide-y divide-line">
-        <Toggle label="AI features" checked={c.aiEnabled} onChange={aiEnabled => patch.mutate({ aiEnabled })} description="Summaries, suggested drafts and Focus. Security scanning keeps running when this is off, because it doesn't depend on AI." />
+        <Toggle label="AI features" checked={c.aiEnabled} onChange={aiEnabled => patch.mutate({ aiEnabled })} description="Summaries, suggested drafts and Focus. Security review of incoming mail keeps running when this is off." />
         <Toggle label="Summaries" checked={c.summariesEnabled} disabled={!c.aiEnabled} onChange={summariesEnabled => patch.mutate({ summariesEnabled })} description={c.aiEnabled ? "Short summaries of a conversation in the intelligence panel. Off means none are made, and no text is processed for one." : "Off while AI features are off."} />
         <Toggle label="Topics" checked={c.topicsEnabled} onChange={topicsEnabled => patch.mutate({ topicsEnabled })} description={<>Tags new mail with topics like invoices or meetings. Off means new mail gets none, and rules and search can't use them. Topics already on messages stay. <Link href="/app/settings/topics" className={linkClass}>Manage topics</Link></>} />
         <Toggle label="Keep attachments" checked={c.storeAttachments} onChange={storeAttachments => patch.mutate({ storeAttachments })} description="Stores an encrypted copy of attachments on new mail so you can download them here. Off means they're still scanned on arrival but not kept, so open them at your mail provider. Attachments already here stay." />
         <Toggle label="Personalization" checked={c.personalizationEnabled} onChange={personalizationEnabled => patch.mutate({ personalizationEnabled })} description="Uses how often you write to and reply to a sender, plus your important and ignore choices, to rank Focus. It's kept to your account." />
         {d.model.hostedConfigured
-          ? <Toggle label="Hosted AI model" checked={c.hostedModelConsent && !blocked} disabled={blocked} onChange={hostedModelConsent => patch.mutate({ hostedModelConsent })} description={blocked ? "Your organization has turned hosted models off." : `When on, ${d.model.model} reviews each incoming message for attacks, along with what the inspector found inside its attachments (structure and embedded code, not document text), and writes summaries and drafts. When off, rules on this deployment do that work instead.`} />
+          ? <Toggle label="Hosted AI for summaries and drafts" checked={c.hostedModelConsent && !blocked} disabled={blocked} onChange={hostedModelConsent => patch.mutate({ hostedModelConsent })} description={blocked ? "Your organization has turned hosted models off." : d.model.securityReview ? `When on, ${d.model.securityReview.model} also writes your summaries and drafts. When off, rules on this server write them instead. Either way it reviews each incoming message for attacks, with what was found inside its attachments (structure and embedded code, not document text): that's set for the whole server, not per person.` : "When on, the hosted model writes your summaries and drafts. When off, rules on this server do that instead."} />
           : <div className="py-2.5"><div className="text-sm font-medium">Hosted AI model</div><p className="mt-0.5 text-[13px] text-muted">Summaries and drafts are made on this server, so no content is sent to a model provider.</p></div>}
         <Toggle label="Server search" checked={c.serverSearchEnabled} onChange={v => { if (v) patch.mutate({ serverSearchEnabled: true }); else setConfirmSearch(true); }} description={c.serverSearchEnabled ? "Words from subjects and bodies, and sender and recipient addresses, are stored unencrypted in the database so search can work. Turning this off deletes them right away." : "Off. Search words aren't stored. New mail is indexed again if you turn this on, but mail already here isn't."} />
       </div>
@@ -146,7 +146,9 @@ function Protection({ d }: { d: Privacy }) {
     "No admin screen shows your mail content, not even to your own organization's admins.",
     "Mail text is kept out of logs and telemetry.",
     d.model.training,
-    d.model.hosted ? `AI review uses ${d.model.model}, a hosted model. You can turn it off in your controls below.` : "Your mail isn't sent to an AI model provider.",
+    d.model.securityReview
+      ? `Each incoming message is reviewed for attacks by ${d.model.securityReview.model}, a hosted model run by ${d.model.securityReview.provider}. That's set for this whole server by whoever runs it, so it isn't one of your controls.${d.model.hosted ? " It also writes your summaries and drafts, which you can turn off below." : ""}`
+      : "Your mail isn't sent to an AI model provider.",
   ];
   return (
     <Card title="How your mail is protected">
@@ -185,7 +187,8 @@ export default function PrivacyPage() {
 
           <Card title="AI model and data use">
             <dl className="space-y-1.5">
-              <TextPair term="Active provider">{d.model.hosted ? `Hosted model: ${d.model.model}` : "Runs on this server. No hosted model is in use."}</TextPair>
+              <TextPair term="Security review">{d.model.securityReview ? `Hosted model: ${d.model.securityReview.model}, run by ${d.model.securityReview.provider}. On for every mailbox on this server.` : "Detectors on this server only. No hosted model is in use."}</TextPair>
+              <TextPair term="Summaries and drafts">{d.model.hosted ? `Hosted model: ${d.model.model}` : "Written by rules on this server."}</TextPair>
               <TextPair term="Training">{d.model.training}</TextPair>
               <TextPair term="Provider retention">{d.model.retention}</TextPair>
               <TextPair term="Processing region"><span data-testid="region">{d.region ?? "Depends on the deployment. This one doesn't report a region."}</span></TextPair>

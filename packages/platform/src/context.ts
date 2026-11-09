@@ -1,7 +1,7 @@
 import { Db, type Tx } from "@aegis/db";
 import { assertKmsAllowed, Envelope, type KeyClass, type KeyStore, type KmsProvider, LocalDevKms, parseRootKey, RootKeyKms, type WrappedKey } from "@aegis/cryptography";
 import type { MailAdapter } from "@aegis/domain";
-import type { InferenceProvider } from "@aegis/ai-core";
+import type { HostedConfig, InferenceProvider } from "@aegis/ai-core";
 import type { MalwareScanner, SemanticClassifier } from "@aegis/security-engine";
 import { BaselineScanner, ClamdScanner } from "@aegis/security-engine";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -35,14 +35,35 @@ export interface AccountRow { id: string; tenant_id: string; owner_user_id: stri
 export type StoredCredential = Record<string, any>;
 export type AdapterFactory = (account: AccountRow, credential: StoredCredential | null, platform: Platform) => Promise<MailAdapter> | MailAdapter;
 
+/**
+ * Which hosted model this server uses. OpenAI is the main provider: OPENAI_API_KEY alone is enough. An Anthropic key is
+ * used when it's the only one set, or when AEGIS_LLM_PROVIDER=anthropic says so. The model and endpoint settings
+ * apply to whichever was chosen. No key, no hosted model: nothing leaves the server for AI.
+ */
+export function hostedAiFromEnv(env: NodeJS.ProcessEnv): HostedConfig | undefined {
+  const keys = { openai: env.OPENAI_API_KEY || undefined, anthropic: env.ANTHROPIC_API_KEY || undefined };
+  const asked = env.AEGIS_LLM_PROVIDER?.trim().toLowerCase();
+  if (asked && asked !== "openai" && asked !== "anthropic") throw new Error(`AEGIS_LLM_PROVIDER must be "openai" or "anthropic", not "${asked}"`);
+  const provider = (asked as "openai" | "anthropic" | undefined) ?? (keys.openai ? "openai" : keys.anthropic ? "anthropic" : undefined);
+  const apiKey = provider && keys[provider];
+  if (!provider || !apiKey) return undefined;
+  // Earlier .env files set AEGIS_LLM_MODEL to a Claude model by default. A name that plainly belongs to the other
+  // provider is left out, so switching keys doesn't send every request to a model that doesn't exist there.
+  const named = env.AEGIS_LLM_MODEL?.trim();
+  const foreign = named && (provider === "openai" ? /^claude/i : /^(gpt|o\d)/i).test(named);
+  return { provider, apiKey, ...(env.AEGIS_LLM_BASE_URL ? { baseURL: env.AEGIS_LLM_BASE_URL } : {}), ...(named && !foreign ? { model: named } : {}) };
+}
+
 export interface PlatformConfig {
   demoMode: boolean;
   appOrigin: string;
   webauthnRpId: string;
-  anthropicApiKey?: string;
-  llmBaseUrl?: string;
+  /**
+   * The hosted AI model, when the server has a key for one. With it set, every incoming message's security review uses
+   * it, for every mailbox on the server. Summaries and drafts use it only for people who turned that on.
+   */
+  ai?: HostedConfig;
   region?: string;
-  llmModel?: string;
   google?: { clientId: string; clientSecret: string; pubsubTopic?: string; pubsubAudience?: string; pubsubServiceAccount?: string };
   microsoft?: { clientId: string; clientSecret: string; webhookUrl?: string };
   /** Instance-wide default limits, from AEGIS_LIMIT_*. A missing key means no limit. Operators can set a different one per workspace. */
@@ -108,10 +129,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): PlatformCon
     },
     appOrigin: env.APP_ORIGIN ?? "http://localhost:3000",
     webauthnRpId: env.WEBAUTHN_RP_ID ?? "localhost",
-    anthropicApiKey: env.ANTHROPIC_API_KEY || undefined,
-    llmBaseUrl: env.AEGIS_LLM_BASE_URL || undefined,
+    ai: hostedAiFromEnv(env),
     region: env.AEGIS_REGION || undefined,
-    llmModel: env.AEGIS_LLM_MODEL || undefined,
     google: env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET ? { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, pubsubTopic: env.GOOGLE_PUBSUB_TOPIC || undefined, pubsubAudience: env.GOOGLE_PUBSUB_AUDIENCE || undefined, pubsubServiceAccount: env.GOOGLE_PUBSUB_SERVICE_ACCOUNT || undefined } : undefined,
     microsoft: env.MICROSOFT_CLIENT_ID && env.MICROSOFT_CLIENT_SECRET ? { clientId: env.MICROSOFT_CLIENT_ID, clientSecret: env.MICROSOFT_CLIENT_SECRET, webhookUrl: env.MICROSOFT_WEBHOOK_URL || undefined } : undefined,
     limits: limitsFromEnv(env),

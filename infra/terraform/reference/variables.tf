@@ -116,7 +116,7 @@ variable "worker_desired_count" {
 }
 
 variable "optional_secrets" {
-  description = "Which optional secrets this deployment sets: GOOGLE_CLIENT_SECRET, MICROSOFT_CLIENT_SECRET, ANTHROPIC_API_KEY."
+  description = "Which optional secrets this deployment sets: GOOGLE_CLIENT_SECRET, MICROSOFT_CLIENT_SECRET, OPENAI_API_KEY, ANTHROPIC_API_KEY."
   type        = list(string)
   default     = []
 }

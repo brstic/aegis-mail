@@ -15,7 +15,7 @@ const MATRIX: { label: string; cells: CellLike[] }[] = [
   { label: "Server can't decrypt cached bodies", cells: ["Keys are managed for you, so access can be restored.", y("For sealed bodies.")] },
   { label: "AI protection around the clock", cells: [y("Every message, as it arrives."), "Before sealing."] },
   { label: "Search", cells: ["On the server. Optional.", "In your browser."] },
-  { label: "Hosted AI model sees content", cells: ["Only once you turn it on.", "Only by explicit action on one message."] },
+  { label: "Hosted AI model sees content", cells: ["For security review, on a server that has one set up. For summaries and drafts, only once you turn it on.", "Only by explicit action on one message."] },
 ];
 
 export default function PrivacyArchitecturePage() {

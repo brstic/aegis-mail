@@ -2,7 +2,7 @@
 import { createPortal } from "react-dom";
 import { Clock, FileText, Lightbulb, Minus, Paperclip, Reply, ShieldAlert, Trash2, Users, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { api, ApiError, newIdempotencyKey, useAccounts, useApi, useEscape, useOnline, usePrefs, useRefreshMail, useToast, type Account } from "@/lib/client";
+import { api, ApiError, newIdempotencyKey, uuid, useAccounts, useApi, useEscape, useOnline, usePrefs, useRefreshMail, useToast, type Account } from "@/lib/client";
 import { Banner, Button, Chip, IconButton, Modal, inputClass } from "../ui";
 
 export interface DraftFile { id: string; filename: string; contentType: string; size: number; sourceAttachmentId?: string }
@@ -96,7 +96,7 @@ export function Composer({ init, onClose }: { init: ComposeInit; onClose: () => 
   const originals = init.original?.files ?? [];
   const copiedDefaults = useRef(false);
   // Chosen here so a slow save and a quick second one can't each create a draft.
-  const draftKey = useRef(init.draftId ?? crypto.randomUUID());
+  const draftKey = useRef(init.draftId ?? uuid());
   const [draftId, setDraftId] = useState(init.draftId);
   const [saved, setSaved] = useState<"idle" | "saving" | "saved" | "local">("idle");
   const [busy, setBusy] = useState(false);
@@ -157,6 +157,8 @@ export function Composer({ init, onClose }: { init: ComposeInit; onClose: () => 
   const isEmpty = () => !init.threadId && !toList.length && !ccList.length && !bccList.length && !subject.trim() && !body.trim() && !files.length;
   const close = () => {
     if (isEmpty()) { if (draftId) void api(`/drafts/${draftId}`, { method: "DELETE" }).catch(() => {}).finally(refresh); onClose(); return; }
+    // A reply opened and closed without a keystroke isn't a draft either.
+    if (!dirty.current && !draftId) { onClose(); return; }
     void save().finally(refresh); onClose();
   };
   useEscape(close, !mini && !confirmRisk && schedule === null, 2);
@@ -336,7 +338,7 @@ export function Composer({ init, onClose }: { init: ComposeInit; onClose: () => 
         <IconButton icon={Trash2} label="Discard draft" onClick={discard} />
       </div>
       {confirmRisk && <Modal title="Reply to a flagged conversation?" onClose={() => setConfirmRisk(false)} footer={<><Button onClick={() => setConfirmRisk(false)}>Go back</Button><Button variant="danger" onClick={() => { setConfirmRisk(false); void send(true); }}>Send anyway</Button></>}><p className="text-sm">This conversation has been flagged as possible phishing or fraud. Replying confirms your address is active and may expose information. Verify through another channel if you can.</p></Modal>}
-      {schedule !== null && <Modal title="Schedule send" onClose={() => setSchedule(null)} footer={<><Button onClick={() => setSchedule(null)}>Cancel</Button><Button variant="primary" onClick={() => { const w = new Date(schedule).toISOString(); setSchedule(null); void send(false, w); }}>Schedule</Button></>}><label className="block text-sm"><span className="mb-1 block font-medium">Send at</span><input type="datetime-local" className={inputClass} value={schedule} min={localDateTime(new Date())} onChange={e => setSchedule(e.target.value)} /></label><p className="mt-2 text-xs text-muted">From {fromAddress}. Your approval is recorded now, and you can cancel any time before then from Scheduled.</p></Modal>}
+      {schedule !== null && <Modal title="Schedule send" onClose={() => setSchedule(null)} footer={<><Button onClick={() => setSchedule(null)}>Cancel</Button><Button variant="primary" disabled={!schedule || Number.isNaN(new Date(schedule).getTime())} onClick={() => { const at = new Date(schedule); if (Number.isNaN(at.getTime())) return; setSchedule(null); void send(false, at.toISOString()); }}>Schedule</Button></>}><label className="block text-sm"><span className="mb-1 block font-medium">Send at</span><input type="datetime-local" className={inputClass} value={schedule} min={localDateTime(new Date())} onChange={e => setSchedule(e.target.value)} /></label><p className="mt-2 text-xs text-muted">From {fromAddress}. Your approval is recorded now, and you can cancel any time before then from Scheduled.</p></Modal>}
     </div>
   );
   return slot ? createPortal(box, slot) : box;

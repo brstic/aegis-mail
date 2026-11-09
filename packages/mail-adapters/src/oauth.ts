@@ -42,6 +42,8 @@ const DEFAULTS = {
 } as const;
 
 const HTTP_TIMEOUT_MS = 30_000;
+/** Mail API calls include whole-message downloads: a 25 MB message is 33 MB of base64, which a slow link doesn't finish in 30 seconds. */
+const MAIL_API_TIMEOUT_MS = 120_000;
 
 export function apiBaseFor(provider: OAuthProvider, config?: OAuthClientConfig): string {
   return (config?.[provider]?.apiBase ?? DEFAULTS[provider].apiBase).replace(/\/$/, "");
@@ -290,7 +292,7 @@ export class TokenManager {
         ...init,
         headers,
         redirect: "error",
-        signal: init.signal ?? AbortSignal.timeout(this.#opts.requestTimeoutMs ?? HTTP_TIMEOUT_MS),
+        signal: init.signal ?? AbortSignal.timeout(this.#opts.requestTimeoutMs ?? MAIL_API_TIMEOUT_MS),
       });
     } catch (err) {
       const name = (err as { name?: unknown })?.name;

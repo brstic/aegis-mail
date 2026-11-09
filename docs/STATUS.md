@@ -1,6 +1,8 @@
 # Status: what exists, honestly
 
-Last updated 2026-11-08. If this file and any other document disagree, this one wins, and the other is a bug.
+Last updated 2026-11-09. If this file and any other document disagree, this one wins, and the other is a bug.
+
+**2026-11-09: first real mailboxes, and what they broke.** Someone outside the project ran it on a Windows desktop with three real mailboxes, Gmail among them. Sync worked. Detection didn't: about 90 ordinary messages were held as malicious (Amazon.ca orders, their company's own app notifications, their own replies from another mailbox), and each was also moved to Spam at the provider. The causes were in the detectors, not the mail: a brand's country site counted as a lookalike of the brand, the same name under another ending counted twice, the owner's other mailboxes weren't known, and a newsletter's tracking links counted as disguised. Those are fixed (engine `det-2026.11.3`, cases in `field-report.test.ts`), and the design changed with them: **the detectors now only flag, and where a hosted model is on, it decides** whether each flag is right, clears false positives, and records an exception for the sender so it doesn't recur (ADR 0008). Mail an older engine held is looked at again after an upgrade and released if it no longer warrants holding. Also fixed from that install: an account that could never be verified without a mail relay, a settings page that crashed without a named time zone, `.env` files with Windows line endings being ignored by the CLI and the web process, a sync counter stuck at 0, and the items under "Fixed on 2026-11-09" below. The same day, two decisions by the project's owner: **OpenAI is the main hosted provider** (`OPENAI_API_KEY`, default model `gpt-6.1-sol`; Anthropic stays as the alternative behind the same prompts), and **the AI's security review runs for every mailbox as soon as the server has a key, with no per-person opt-in** (ADR 0009). The opt-in remains for summaries, drafts and the assistant, and a workspace's administrators can still turn hosted models off. The Privacy Center, the legal page and the docs say so. None of the AI path has run against a live model from either provider: it's tested with stand-in clients, which for OpenAI includes checking that every request is a schema its strict mode accepts. After all of that day's changes, on 2026-11-09: `pnpm test` 1650 passed and 103 skipped (61 files run, 6 skipped), `pnpm typecheck` clean, `pnpm test:e2e` 225 passed and 1 skipped, and `tofu test` 7 passed. The `threat detail` visual baseline was regenerated: it still showed an older header layout.
 
 **2026-11-08: open source.** The project is published under the AGPL-3.0 for people to run themselves, and billing, plans and Stripe were removed. After the removal, on 2026-11-08: `pnpm test` 1592 passed and 103 skipped (55 files run, 6 skipped), `pnpm typecheck` clean, and `pnpm test:e2e` 225 passed and 1 skipped. Counts further down that differ are from 2026-11-07. An operator-held root key (`AEGIS_ROOT_KEY`) was added as the default production root of trust, and production sign-up is by invitation after the first account (`AEGIS_SIGNUP`). A self-hosting stack was added (`compose.yaml`, `docs/self-hosting.md`): its configuration passes `docker compose config`, and it hasn't been run.
 
@@ -34,7 +36,7 @@ These are test servers configured by us, so they say little about what Gmail, iC
 Other things run for real, once, on that date:
 - **Docker:** `infra/docker` built on arm64 under Colima, and `compose.yml` ran from an empty database to health 200, migrations, seed, demo sign-in as the web login, and simulated mail reaching Focus through the worker. amd64 wasn't built.
 - **CI:** `.github/workflows/ci.yml` ran under `act` on a clean copy of the working tree, on Node 24 and Postgres 17 in Linux containers on arm64. **`test` passes** (frozen install, typecheck, 1880 passed and 104 skipped, `eval`, web build) and **`e2e` passes** (185 passed, 1 skipped). `supply-chain`: audit and gitleaks pass; the SBOM action's upload fails against `act`'s artifact server, so that step is unproven. Never run on GitHub's hosted runners.
-- **Secrets and dependencies:** gitleaks over the working tree finds nothing after two allowlisted non-secrets (`.gitleaks.toml`). `pnpm audit --prod --audit-level high` passes, with `joi` overridden and one moderate left in OpenTelemetry. `docs/sbom.spdx.json` is generated from the lockfile.
+- **Secrets and dependencies:** gitleaks over the working tree finds nothing after two allowlisted non-secrets (`.gitleaks.toml`). `pnpm audit --prod --audit-level high` passes, with `joi` overridden and one moderate left in OpenTelemetry. `docs/sbom.spdx.json` was generated on 2026-11-08, so it predates the `openai` dependency added the next day; CI builds a fresh one on every push.
 - **Staging:** a demo-mode site with synthetic mail ran from `infra/docker/compose.staging.yml` on an amd64 Linux server, behind a reverse proxy and a password gate. `apps/web/scripts/staging-smoke.mjs` drives such a site in a browser. It wasn't a production deployment: no real mailbox, KMS, relay or AI key.
 - **Production mode:** `infra/local/production-boot.sh` ran the real web and worker with `NODE_ENV=production`, demo mode off, separate database logins and `AwsKmsProvider` on a local server speaking the KMS protocol (moto, an emulator). See the results below. No TLS, real KMS, real relay or real mailbox was involved.
 - **OpenTofu:** `infra/terraform` passes `validate`, `fmt -check` and `tofu test` with a mocked provider. Includes an encrypted EFS volume for the deletion log. **Never planned against AWS, never applied.**
@@ -48,7 +50,9 @@ Other things run for real, once, on that date:
 | Bounded MIME parsing, HTML sanitizing, sandboxed rendering, click-through links | Works | Real browser test with hostile HTML |
 | Security engine: auth, lookalikes, links, QR, attachments, BEC and fraud language, injection, policy, reversible quarantine | Works | Synthetic corpus only: see limits below |
 | Deep file inspection (`files.ts`): PDF streams and object streams decoded, hex-escaped names, JavaScript, auto-run actions, Launch, embedded programs, links; Office macros, remote templates, Follina-style links, DDE; RTF Equation Editor objects; HTML and SVG sign-in forms, smuggling, scripts; what scripts download and run | Works | Crafted inert samples only (`files.test.ts`, 14 tests, plus a 3 s bound on hostile input). No real malware corpus yet. Links found inside files go through the URL checks |
-| AI attachment review: the hosted model sees each inspected file's signal codes and embedded code (never document text) and can add up to +4 per file, never lower risk | Built | Unit-tested with a fake client. Not yet run against the live model. Needs hosted-model consent, like the rest of the semantic step |
+| AI review of detector flags: when the detectors flag a message, the hosted model is shown it with their findings and answers threat, false positive or unsure. A confident false positive is delivered and its sender gets an exception (visible and removable under Settings, People); unsure is shown with a warning; a threat stays held. It can't clear malware, a failed DMARC, a blocked domain, or mail that tries to instruct it. Releasing a message yourself records the same exception | Built | `field-report.test.ts` and `ai-review.test.ts`, with a fake model. **Never run against a live model**, so how often it's right is unmeasured. Needs a hosted model key on the server (`OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`), and then runs for every mailbox; without one the detectors decide alone |
+| Re-checking held mail after an engine upgrade: fetched again from the provider, judged afresh, released to its folder here and at the provider if it no longer warrants holding | Built | `ai-review.test.ts` against the demo adapter. Not run against Gmail, where the message has been moved to Spam in the meantime |
+| AI attachment review: the hosted model sees each inspected file's signal codes and embedded code (never document text) and can add up to +4 per file, never lower risk | Built | Unit-tested with a fake client. Not yet run against the live model. Runs whenever the server has a hosted model key, like the rest of the security review |
 | Focus, priority, explanations, tasks, open loops, digests | Works | Synthetic only |
 | Search with Gmail-style operators | Works | PostgreSQL FTS; plaintext lexemes, disclosed, with opt-out |
 | Semantic search, off unless `AEGIS_EMBEDDINGS=local` | Works | Real model in real test and browser runs, on synthetic mail only. A local model, sealed vectors, no pgvector. See below for how well it finds things |
@@ -84,7 +88,7 @@ Don't assume these work until `docs/runbooks/live-provider-smoke-test.md` has be
 | SMTP | Real Postfix, and a local server | Any other server, and real relays. A partly refused send is recorded on the approval (`recipients_refused`) and in audit, but the UI doesn't show it yet |
 | POP3 | Real Dovecot, and our own fake server | Any server other than Dovecot |
 | Pub/Sub JWT and Graph webhook routes | **Not tested end to end** | Written from docs |
-| Hosted Claude provider | Fake client | **Never called live.** Prompt quality, refusals and cost are unmeasured |
+| Hosted model providers: OpenAI (main) and Anthropic | Stand-in clients for both. For OpenAI the real SDK builds each request, and a test checks all seven are schemas strict mode accepts | **Neither has been called live.** Prompt quality, refusals, cost per mailbox, and whether the default model names are right for your account are unmeasured. The OpenAI model names and request shape were taken from OpenAI's documentation on 2026-11-09 |
 | Transactional SMTP relay | Real `nodemailer` to a local server, with STARTTLS and certificate checks | Any real relay's limits, bounces and reputation. Failed delivery after retries is recorded but not shown to anyone |
 | OIDC SSO | Real `oauth4webapi` against an in-process provider with real signed JWTs, and in a real browser | **Never run against Okta, Entra ID or Google Workspace.** Entra doesn't send `email_verified` by default, so it may refuse everyone until configured |
 | SAML SSO | Real `@node-saml/node-saml` and real XML signatures from `xml-crypto` | **Never run against a real provider.** Whether each one will send the required `email_verified` attribute as written |
@@ -103,7 +107,7 @@ Don't assume these work until `docs/runbooks/live-provider-smoke-test.md` has be
 | Live iCloud, Yahoo, Fastmail | Test mailboxes and app passwords |
 | Production keys | An AWS KMS key. `AwsKmsProvider` exists and passes against a local server speaking the KMS protocol (`aws-kms.live.test.ts`, moto), but has never touched AWS, so IAM, key policies and throttling are untested. **Boot refuses the dev KMS in production** |
 | Malware scanning | Run clamd with `infra/docker/clamd.conf`; set `CLAMD_HOST`. Until then attachments say "baseline checks only". Proved against real clamd, but no real malware corpus has been through it, only EICAR |
-| Hosted AI | `ANTHROPIC_API_KEY`, then evaluate on real content |
+| Hosted AI | `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`), then evaluate on real content. Every incoming message is one call, so measure the cost on a real mailbox too |
 | Field-validated detection | A consented or licensed corpus |
 | Security claims | External pen test and cryptographic review; none has happened |
 | Certifications | SOC 2 and ISO audits; none exist and none are claimed |
@@ -116,6 +120,34 @@ Don't assume these work until `docs/runbooks/live-provider-smoke-test.md` has be
 | Gateway mode: an inline SMTP gateway with pre-delivery quarantine | Dropped on 2026-11-07. The product only connects to existing mail services: Gmail, Outlook, iCloud and IMAP. The experimental code was removed. Its tables and roles from migrations 006 and 013 are still in the schema, unused |
 | Attested confidential processing (Mode C) | Needs TEE hardware and an independent verifier, and a software stand-in would be the checkbox the prompt forbids. The design, open problems and acceptance gates are in `docs/mode-c-design.md`, unreviewed |
 
+## Fixed on 2026-11-09
+Found by reading the code after the first real install. Each has a test unless it says otherwise.
+
+| Area | What was wrong |
+|---|---|
+| Sync | The "messages so far" count was written once, at the end of a run, so a first sync always showed 0 and a failed run lost its count. A message the provider couldn't hand over (over the size limit, or POP3) stalled the whole mailbox on every retry. A mailbox bigger than one run waited up to six hours for the next. A password the server kept refusing was retried for ever instead of asking for a reconnect. IMAP error causes were recorded as "ImapError", so the account page never showed the reason |
+| Worker | A job's lease was never renewed, so a sync longer than ten minutes was handed to a second loop while the first was still running. Gmail and Microsoft mailboxes with no push endpoint configured were only polled every six hours, and a push renewal was queued every 30 seconds (untested: it needs a running scheduler) |
+| Reading mail | "Show images" never loaded remote images, because the page's own policy blocked them inside the message frame (checked in Chromium by the review, no automated test). Text taken from HTML fused words across paragraphs, so "attached.Thanks" read as a web address. Attachments with non-ASCII names downloaded with the letters replaced |
+| Signing in | The session cookie was marked Secure whenever the build was production, so sign-in looped on a server reached over plain http on a LAN address (no automated test). A failed mailbox connection logged nothing |
+| Lists | "Awaiting reply" included conversations that had been answered. A label showed only its inbox messages while its count included archived ones. The layout switcher showed Split selected while the list behaved as Full width |
+| Focus | After a first sync, old mail with dates in it filled "Today's commitments": past dates counted as due, and "tomorrow" was read from the day of the sync |
+| Elsewhere | A rule typed in plain words could return a server error instead of a message. A page that threw took the whole app with it: there were no error boundaries. Compose crashed on a server reached over plain http (no automated test) |
+
+## Known and not fixed
+From the same review. Real, and bigger than a day's work or needing a live provider to get right.
+
+| Item | Note |
+|---|---|
+| Microsoft: only six well-known folders sync | Mail filed into your own folders never appears, and a move in Outlook is seen as delete plus new mail |
+| IMAP: sent mail isn't saved to the Sent folder | Servers that don't save submitted mail themselves (iCloud, many cPanel hosts) show nothing in Sent |
+| A send interrupted between two transactions can leave a draft stuck in "sending" | No sweeper picks it up |
+| Messages deleted during a Gmail or Microsoft cursor expiry stay in the app | The post-reconcile sweep only exists for IMAP |
+| iCloud splits `Authentication-Results` across headers | Only the first is read, so DMARC is often missed there |
+| Thread list paging can skip conversations with the same timestamp at a page boundary | |
+| Archiving or deleting from Sent has no undo | |
+| Insights shows hours in the database's time zone | |
+| Data export stops at 5,000 conversations without saying so | |
+
 ## Not done (could be built, but wasn't)
 | Item | Note |
 |---|---|
@@ -124,7 +156,7 @@ Don't assume these work until `docs/runbooks/live-provider-smoke-test.md` has be
 | Surfacing transactional mail that failed to deliver | Recorded with an error code after retries. The inviter isn't told |
 | Alerting and dashboards | OpenTelemetry spans and a content-free metrics endpoint exist. Nothing is wired to an alert, because there's no deployment to alert on |
 | Native apps, CRM and calendar agents (P2) | Not started. The browser extension exists as a local-only link checker, `apps/extension` |
-| Per-feature privacy toggles for classification and attachment analysis | Security analysis always runs. AI, personalization, hosted models, summaries, attachment retention and search can be turned off |
+| Per-feature privacy toggles for classification and attachment analysis | Security analysis always runs, and with a hosted model on the server its AI review does too, for every mailbox: only the workspace-wide switch turns that off. AI features, personalization, hosted summaries and drafts, attachment retention and search can be turned off per person |
 | Virtualized long lists | Paginated instead |
 | Working hours affecting ranking | They decide when notifications arrive, and the setting says it doesn't change ranking |
 | Screen-reader manual pass | Automated axe only. Needs a person with a screen reader |
@@ -144,7 +176,9 @@ Measured with the real model on `packages/test-fixtures/src/semantic-set.ts`: 16
 So it finds most of what it should in a small set, along with about twice as many things it shouldn't, and it misses some paraphrases entirely: "someone asking to move our meeting" finds neither message about rescheduling. The floor was picked on this same set, so these numbers flatter it, and 30 short messages say little about a real mailbox. Nothing has been measured on real mail. That's why results are labelled and word matches stay in the list. See `docs/privacy-modes.md` for what it reads and stores.
 
 ## Detection, honestly
-See `docs/eval-report.md`. **The number that matters: on a holdout set written by someone other than the rules' author, and never tuned on, the engine caught 55% of attacks at a 5% false-positive rate (91.7% precision, 40 messages).** It's synthetic, and it's small, so treat that as "catches about half of unfamiliar phrasing", not as a field result.
+See `docs/eval-report.md`. **The number that matters: on a holdout set written by someone other than the rules' author, and never tuned on, the detectors alone caught 50% of attacks at a 5% false-positive rate (90.9% precision, 40 messages).** It was 55% before the 2026-11-09 fixes: making the detectors stop holding ordinary mail cost one of the twenty attacks in that half, and it wasn't inspected, because that set is only ever scored. It's synthetic, and it's small, so treat that as "catches about half of unfamiliar phrasing", not as a field result.
+
+**The first field result is worse than any of these numbers.** On three real mailboxes the previous engine held roughly 90 legitimate messages, a false-positive rate far above the 5% measured here, because the synthetic benign mail had none of the shapes real mail has (country domains, several domains per company, tracking links, several mailboxes per person). The eval measures the detectors only. The AI review of their flags isn't in it, and has never run against the live model.
 
 The hand-written `core` set scores 100%, but the same author wrote those messages and the rules, so it's a regression check. The other holdout half, `holdout_dev`, scores 90% because the rules were tuned on it. Only 2 of 8 adversarial paraphrases are caught. Expected calibration error is 0.158, so "threat estimate" is a score, not a calibrated probability.
 

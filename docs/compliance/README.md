@@ -25,13 +25,14 @@
 | Mail sync and caching | Message content, metadata | Provide the mail client | Until disconnect or tenant retention | Mail provider (source) |
 | Security analysis | Headers, content, attachments | Detect threats | Result retained with the message | clamd if configured |
 | Priority and tasks | Derived features | Organize attention | With the message; user can reset | None |
-| Hosted AI (opt-in) | Thread content | Summaries, drafts | Per model provider terms | Model provider |
+| Hosted AI, when the instance has a key | Text of every incoming message, and what was found inside its attachments | Security review | Per model provider terms | Model provider |
+| Hosted AI (opt-in per person) | Thread content | Summaries, drafts | Per model provider terms | Model provider |
 | Telemetry | Label, category, action, day | Tenant security view | Until tenant deletion | Tenant security admins |
 | Audit | Actor, event, target ID | Accountability | Per policy | Tenant admins |
 | Operator audit | Operator, action, tenant ID, reason | Accountability for the people running the instance | Append-only; no retention job yet | Service operators |
 
 ## Subprocessors
-Depends on the deployment. Candidates: the host or cloud provider, AWS KMS (which holds the root key and sees wrapped keys, never content), the SMTP relay (verification and invitation mail), and the model provider, only if hosted AI is configured and a user turns it on. Mail providers such as Google and Microsoft hold the mail already, and are sources rather than processors.
+Depends on the deployment. Candidates: the host or cloud provider, AWS KMS (which holds the root key and sees wrapped keys, never content), the SMTP relay (verification and invitation mail), and the model provider (OpenAI by default, or Anthropic), if hosted AI is configured: it then receives every incoming message for security review. Mail providers such as Google and Microsoft hold the mail already, and are sources rather than processors.
 
 ## Before offering an instance to other people
 Google API Services User Data Policy, Limited Use and, beyond 100 test users, restricted-scope verification with a CASA assessment · Microsoft publisher verification · provider terms · a DPA and subprocessor list where you act as a processor · your own privacy policy and terms (the `/legal/*` pages in `apps/web` are drafts, not advice).

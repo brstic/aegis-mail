@@ -128,6 +128,17 @@ describe("helpers", () => {
     expect(normalizeSubject("RE: Fwd: AW:  Hello   World")).toBe("hello world");
     expect(normalizeSubject("Re[2]: x")).toBe("x");
   });
+  it("text taken from HTML keeps the breaks between blocks, so sentences don't fuse into fake web addresses", async () => {
+    const m = await parseMail(raw("From: a@b.test\nSubject: x\nMIME-Version: 1.0\nContent-Type: text/html; charset=utf-8\n\n<p>Racun je u prilogu.</p><p>Hvala</p><table><tr><td>Total</td><td>40</td></tr></table>example.com<br>Thanks"));
+    expect(m.visibleText).not.toMatch(/prilogu\.Hvala|example\.comThanks|Total40/);
+    expect(m.visibleText).toMatch(/prilogu\.\n+Hvala/);
+    expect(m.visibleText).toMatch(/Total 40/);
+  });
+  it("a line break inside a link separates its words, and inline tags don't", () => {
+    const u = extractUrls("", `<a href="https://shop.test/a"><span>www.shop.test</span><br><span>Visit store</span></a><a href="https://x.test/b"><span>pay</span><span>pal.com</span></a>`);
+    expect(u[0]!.text).toBe("www.shop.test Visit store");
+    expect(u[1]!.text).toBe("paypal.com");
+  });
   it("snippet skips quoted text", () => expect(makeSnippet("New line\n> quoted\nOn Mon, X wrote:\nmore")).toBe("New line more"));
   it("extracts anchor text and hosts without fetching", () => {
     const u = extractUrls("", `<a href="https://evil.test/login">https://bank.example</a>`);

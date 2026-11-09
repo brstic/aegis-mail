@@ -122,7 +122,10 @@ export function ruleFromText(text: string): { definition: RuleDefinition; notes:
   if (label) actions.push({ type: "label", name: label[1]!.trim() });
   if (!conditions.length) return { error: "I couldn't tell which emails this applies to. Try naming a sender domain, a topic, or a word in the subject." };
   if (!actions.length) return { error: "I couldn't tell what should happen. Try archive, label, hold, mark important, or remind me." };
-  return { definition: RuleDefinition.parse({ trigger: "message.classified", match: "all", conditions, actions }), notes };
+  // What was typed can be understood and still be out of range: a reminder a year out, or dozens of quoted phrases.
+  const built = RuleDefinition.safeParse({ trigger: "message.classified", match: "all", conditions, actions });
+  if (!built.success) return { error: "That rule is outside what's supported. Reminders can be up to 30 days out, and a rule can match up to 20 words or phrases." };
+  return { definition: built.data, notes };
 }
 
 export async function listAutomations(p: Platform, ctx: Ctx) {

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { Db } from "@aegis/db";
 import { connectionFor, DeletionLogBrokenError, DeletionLogUnavailableError, reapplyDeletions, type ReapplyOptions } from "../index";
 
@@ -8,7 +8,8 @@ import { connectionFor, DeletionLogBrokenError, DeletionLogUnavailableError, rea
  * Connects as DATABASE_URL_RESTORE, a member of aegis_restore_conn. Needs no KMS access. Prints counts and never an id.
  * Exit: 0 applied, 1 failed part way (safe to run again), 2 log refused and nothing applied, 64 usage.
  */
-if (existsSync(".env")) for (const l of readFileSync(".env", "utf8").split("\n")) { const m = l.match(/^([A-Z_0-9]+)=(.*)$/); if (m && !process.env[m[1]!]) process.env[m[1]!] = m[2]; }
+// Node's own parser, the same one the worker's --env-file uses: it handles quotes, comments and Windows line endings.
+if (existsSync(".env")) process.loadEnvFile(".env");
 const USAGE = "usage: restore:reapply <log path> [--expect-head=<seq>:<hash>] [--verify-only] [--allow-broken-chain]";
 const opts: ReapplyOptions = {};
 let path: string | undefined, bad = false;

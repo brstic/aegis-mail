@@ -35,7 +35,7 @@ function Wide() {
   return (
     <svg viewBox="0 0 1040 500" role="img" aria-labelledby="tb-wide-t tb-wide-d" className="hidden h-auto w-full lg:block">
       <title id="tb-wide-t">Trust boundaries in managed processing</title>
-      <desc id="tb-wide-d">Mail travels from the sender to your mail provider, which sits outside the service. Inside the service boundary, workers and application servers handle plaintext in memory, while the database holds encrypted content and a plaintext search index. Your browser renders the mail. Tenant admins see aggregates only. A hosted AI model is outside the boundary and receives content only if you turn it on.</desc>
+      <desc id="tb-wide-d">Mail travels from the sender to your mail provider, which sits outside the service. Inside the service boundary, workers and application servers handle plaintext in memory, while the database holds encrypted content and a plaintext search index. Your browser renders the mail. Tenant admins see aggregates only. A hosted AI model is outside the boundary. It receives content only when the server has a key for one, and then it reviews every incoming message.</desc>
       <Defs id="tb-arrow" />
 
       {/* Service boundary */}
@@ -52,7 +52,7 @@ function Wide() {
       <Node x={320} y={366} w={440} h={92} title="Admin console" lines={["Aggregate threat counts, policy changes, audit events.", "No screen, API or database role here shows message content."]} />
 
       <Node x={840} y={70} w={180} h={100} title="Your browser" lines={["Reads the mail in a", "sandboxed frame", "Client keys in Mode B"]} />
-      <Node x={840} y={214} w={180} h={118} title="Hosted AI model" lines={["Off by default", "Sees content only if", "you turn it on", "Outside the boundary"]} dashed />
+      <Node x={840} y={214} w={180} h={118} title="Hosted AI model" lines={["Off without a key", "With one, reviews", "every message", "Outside the boundary"]} dashed />
       <Node x={840} y={366} w={180} h={92} title="Tenant admins" lines={["See aggregates only"]} />
 
       <Arrow d="M130 152 V206" />
@@ -77,7 +77,7 @@ function Tall() {
     { title: "Application servers", lines: ["Plaintext in memory only", "while you use the app"], inside: true },
     { title: "Admin console", lines: ["Aggregate counts and audit", "No path to message content"], inside: true },
     { title: "Your browser", lines: ["Reads the mail in a", "sandboxed frame"] },
-    { title: "Hosted AI model", lines: ["Off by default", "Sees content only if you", "turn it on"], dashed: true },
+    { title: "Hosted AI model", lines: ["Off without a key. With one,", "it reviews every", "incoming message"], dashed: true },
   ];
   const w = 320, gap = 22, heightOf = (n: number) => 36 + n * 16;
   let y = 8;
@@ -87,7 +87,7 @@ function Tall() {
   return (
     <svg viewBox={`0 0 ${w} ${total}`} role="img" aria-labelledby="tb-tall-t tb-tall-d" className="mx-auto h-auto w-full max-w-sm lg:hidden">
       <title id="tb-tall-t">Trust boundaries in managed processing</title>
-      <desc id="tb-tall-d">From top to bottom: sender, your mail provider, then inside the service boundary the workers, database, application servers and admin console, then your browser, and a hosted AI model that sees content only if you turn it on.</desc>
+      <desc id="tb-tall-d">From top to bottom: sender, your mail provider, then inside the service boundary the workers, database, application servers and admin console, then your browser, and a hosted AI model that sees content only when the server has a key for one, and then reviews every incoming message.</desc>
       <Defs id="tb-arrow-tall" />
       <rect x={1} y={first.at - 12} width={w - 2} height={last.at + last.h - first.at + 22} rx={12} className="fill-accent-soft/50 stroke-accent" strokeWidth={1.25} strokeDasharray="6 4" />
       {placed.map((r, i) => (

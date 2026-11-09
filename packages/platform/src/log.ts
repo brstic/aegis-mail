@@ -27,6 +27,8 @@ export function makeLogger(sink: (line: string) => void = l => process.stdout.wr
 
 /** Error names and our own coded messages only. Provider errors can embed tokens or bodies. */
 export function errorCode(e: unknown): string {
+  // Mail adapters classify what went wrong (auth_failed, timeout, tls_failed...) and carry it as `problem`.
+  if (e && typeof e === "object" && "problem" in e && typeof (e as { problem: unknown }).problem === "string") return (e as { problem: string }).problem.slice(0, 64);
   if (e && typeof e === "object" && "code" in e && typeof (e as { code: unknown }).code === "string") return (e as { code: string }).code.slice(0, 64);
   if (e instanceof Error) return e.name.slice(0, 64);
   return "unknown";

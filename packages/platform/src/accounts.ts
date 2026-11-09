@@ -3,6 +3,7 @@ import type { Tx } from "@aegis/db";
 import { randomToken } from "@aegis/cryptography";
 import { createHash } from "node:crypto";
 import { audit } from "./audit";
+import { errorCode } from "./log";
 import { AppError, badRequest, type AccountRow, type Ctx, notFound, type Platform, type StoredCredential } from "./context";
 import { recordErasure } from "./deletion-log";
 import { DemoAdapter } from "./demo-adapter";
@@ -132,8 +133,10 @@ export async function disconnectAccount(p: Platform, ctx: Ctx, accountId: string
 
 /** Worker side. Revocation is best effort; the credential is destroyed regardless. */
 export async function finishDisconnect(p: Platform, tenantId: string, accountId: string, deleteData: boolean) {
-  const kind = (await p.db.withWorker(tenantId, t => t.one<any>("SELECT kind FROM mail_accounts WHERE id=$1", [accountId])))?.kind;
-  if (!kind) return;
+  const row = await p.db.withWorker(tenantId, t => t.one<any>("SELECT kind, status FROM mail_accounts WHERE id=$1", [accountId]));
+  // Reconnected before this ran: the credential on file is the new one, and revoking it would break the fresh connection.
+  if (!row || row.status !== "disconnected") return;
+  const kind = row.kind;
   let revoked = false;
   try {
     const { adapter } = await adapterFor(p, tenantId, accountId);
@@ -176,5 +179,9 @@ export async function finishMailboxOAuth(p: Platform, ctx: Ctx, provider: "gmail
   // expectedState is the value whose hash matched this session's flow row above.
   const cred = await exchangeCode(provider, { code: q.code, state: q.state, expectedState: q.state, codeVerifier: verifier, redirectUri }, { config: oauthConfig(p), fetch: p.fetch });
   const email = await userinfo(provider, cred.accessToken, { fetch: p.fetch });
-  return connectAccount(p, ctx, { kind: provider, email, displayName: email, readOnly: flow.read_only, credential: { ...cred, kind: "oauth", provider }, scopes: cred.scopes });
+  const accountId = await connectAccount(p, ctx, { kind: provider, email, displayName: email, readOnly: flow.read_only, credential: { ...cred, kind: "oauth", provider }, scopes: cred.scopes });
+  // The provider just proved who owns this address. If it's the sign-in address, that's the verification.
+  const { verifyByConnectedMailbox } = await import("./identity");
+  await verifyByConnectedMailbox(p, ctx, provider, email).catch(e => p.log.warn("auth.mailbox_verify_failed", { errorCode: errorCode(e) }));
+  return accountId;
 }

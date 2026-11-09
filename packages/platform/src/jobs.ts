@@ -3,7 +3,7 @@ import type { Tx } from "@aegis/db";
 import type { Platform } from "./context";
 import { errorCode } from "./log";
 
-export type JobKind = "sync.account" | "provider.change" | "send.execute" | "send.reconcile" | "push.renew" | "tick" | "retention.sweep" | "account.disconnect" | "tenant.shred" | "member.removed" | "mail.send" | "notifications.scan" | "key.reseal" | "usage.nightly" | "usage.tenant_snapshot" | "embed.message" | "embed.backfill" | "domains.recheck" | "domains.tenant_recheck" | "deletion.ship";
+export type JobKind = "sync.account" | "provider.change" | "quarantine.recheck" | "send.execute" | "send.reconcile" | "push.renew" | "tick" | "retention.sweep" | "account.disconnect" | "tenant.shred" | "member.removed" | "mail.send" | "notifications.scan" | "key.reseal" | "usage.nightly" | "usage.tenant_snapshot" | "embed.message" | "embed.backfill" | "domains.recheck" | "domains.tenant_recheck" | "deletion.ship";
 const ID_KEYS = new Set(["accountId", "messageId", "approvalId", "draftId", "change", "rollback", "reason", "attempt", "automationId", "userId", "mailId"]);
 const CHANGE_KEYS = new Set(["moveToRole", "isRead", "isStarred", "addLabels", "removeLabels", "folder_role", "is_read", "is_starred", "label_id", "label_applied"]);
 
@@ -82,9 +82,10 @@ export async function cancelJobs(tx: Tx, accountId: string) {
 
 /**
  * A worker that died leaves 'running' rows; return them to the queue after a lease timeout. Attempts count, so a job that
- * kills its worker every time eventually dead-letters instead of looping forever.
+ * kills its worker every time eventually dead-letters instead of looping forever. A live worker renews each running job's
+ * lease every 30 seconds, so the window only has to cover a missed renewal or two, not the longest job.
  */
-export async function reapStuckJobs(p: Platform, leaseMs = 10 * 60_000) {
+export async function reapStuckJobs(p: Platform, leaseMs = 3 * 60_000) {
   await p.db.withSystem(async t => {
     await t.query("UPDATE jobs SET state='dead', finished_at=now(), last_error_code='lease_expired' WHERE state='running' AND locked_at < now() - ($1::int * interval '1 millisecond') AND attempts >= max_attempts", [leaseMs]);
     await t.query("UPDATE jobs SET state='queued', run_at=now() WHERE state='running' AND locked_at < now() - ($1::int * interval '1 millisecond')", [leaseMs]);

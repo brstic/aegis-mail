@@ -12,7 +12,9 @@ void Id;
 function attachmentHeaders(filename: string) {
   // Never inline: an attachment can't execute or render in our origin. Name is sanitized for the header.
   const safe = filename.replace(/[^\w.\- ]+/g, "_").slice(0, 150) || "attachment";
-  return { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="${safe}"`, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox", "Cache-Control": "no-store" };
+  // The plain name is ASCII only, so "Račun.pdf" would arrive as "Ra_un.pdf". filename* carries the real one (RFC 6266).
+  const full = encodeURIComponent(filename.replace(/[\x00-\x1f\x7f"\\/]+/g, "_").slice(0, 150) || "attachment").replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="${safe}"; filename*=UTF-8''${full}`, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox", "Cache-Control": "no-store" };
 }
 
 export const mailRoutes: RouteDef[] = [
@@ -58,6 +60,8 @@ export const mailRoutes: RouteDef[] = [
       return NextResponse.redirect(`${origin}/app/connect?connected=${provider}`);
     } catch (e) {
       if (e instanceof AppError && e.code === "oauth_state_invalid") return NextResponse.redirect(`${origin}/app/connect?error=expired`);
+      // The person sees "failed" either way. Whoever runs the server needs to know which of a dozen causes it was.
+      platform().log.error("oauth.callback_failed", { provider, errorCode: P.errorCode(e), status: typeof (e as { status?: unknown })?.status === "number" ? (e as { status: number }).status : undefined });
       return NextResponse.redirect(`${origin}/app/connect?error=failed`);
     }
   } },
@@ -88,7 +92,7 @@ export const mailRoutes: RouteDef[] = [
   { m: "GET", p: "/links/inspect", query: z.object({ m: z.string().uuid(), u: z.string().max(4000) }), h: async ({ ctx, query }) => P.inspectLink(platform(), ctx, query.m, query.u) },
 
   { m: "GET", p: "/contacts", h: async ({ ctx }) => P.listContacts(platform(), ctx) },
-  { m: "PATCH", p: "/contacts/:id", body: z.object({ vip: z.boolean().optional(), ignored: z.boolean().optional() }), h: async ({ ctx, params, body }) => { await P.setContact(platform(), ctx, params.id!, body); return { ok: true }; } },
+  { m: "PATCH", p: "/contacts/:id", body: z.object({ vip: z.boolean().optional(), ignored: z.boolean().optional(), exception: z.literal(false).optional() }), h: async ({ ctx, params, body }) => { await P.setContact(platform(), ctx, params.id!, body); return { ok: true }; } },
   { m: "POST", p: "/contacts/reset-learning", h: async ({ ctx }) => P.resetLearning(platform(), ctx) },
   { m: "GET", p: "/labels", h: async ({ ctx }) => P.listLabels(platform(), ctx) },
   { m: "POST", p: "/labels", body: z.object({ accountId: z.string().uuid(), name: z.string().min(1).max(64), color: z.string().regex(/^#[0-9a-f]{6}$/i).optional() }), h: async ({ ctx, body }) => P.createLabel(platform(), ctx, body.accountId, body.name, body.color) },

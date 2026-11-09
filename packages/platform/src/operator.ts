@@ -128,7 +128,7 @@ export async function operatorHealth(p: Platform, op: OperatorCtx) {
     worker: { ok: fresh(worker?.last_seen_at), lastSeenAt: worker?.last_seen_at ?? null },
     scanner: { configured: !!p.config.clamd, kind: p.config.clamd ? "clamd" : "baseline" },
     kms: { type: p.kms.id.split(":")[0]! },
-    hostedAi: { configured: !!p.config.anthropicApiKey },
+    hostedAi: { configured: !!p.config.ai, provider: p.config.ai?.provider ?? null },
     limits: { instanceDefaults: Object.fromEntries(LIMIT_KEYS.map(k => [k, p.config.limits?.[k] ?? null])) },
     mail: { configured: !!p.mailer },
     // From the worker, which is the process that ships it. A worker with no sink never writes this, and one that's fallen behind stops.

@@ -64,7 +64,7 @@ export default function FeaturesPage() {
       <Section id="ai" tone="surface" title="AI that helps, and asks first.">
         <div className="grid gap-x-10 gap-y-8 sm:grid-cols-2 lg:grid-cols-3">
           <Point title="Summaries, tasks and drafts">Summarize a thread, pull out tasks, and draft a reply that you edit and approve. Nothing sends itself.</Point>
-          <Point title="Private by default">Hosted models only see content once you turn them on. Your email is never used to train models.</Point>
+          <Point title="Private by default">With no AI key on your server, no mail text leaves it. Add one, and AI reviews every message for attacks. Your email is never used to train models.</Point>
           <Point title="Email is treated as data">Text in a message can&apos;t instruct the assistant. Hidden text is screened for injection attempts, and the model has no tool to send, forward or delete.</Point>
           <Point title="Off switch">Every AI feature can be turned off on its own.</Point>
         </div>

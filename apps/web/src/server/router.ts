@@ -54,7 +54,14 @@ const UUID_PARAM = /^(id|threadId|messageId|accountId)$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function setSessionCookie(token: string, expires: Date) {
-  (await cookies()).set(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", expires });
+  (await cookies()).set(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: secureCookies(), path: "/", expires });
+}
+/**
+ * Secure cookies follow the address the app is served at, not the build mode. `next start` is always production, and a
+ * browser drops a Secure cookie that arrives over plain http on a LAN address, which would make sign-in loop for ever.
+ */
+export function secureCookies(): boolean {
+  try { return new URL(platform().config.appOrigin).protocol === "https:"; } catch { return process.env.NODE_ENV === "production"; }
 }
 export async function clearSessionCookie() { (await cookies()).delete(COOKIE); }
 
@@ -92,7 +99,8 @@ export function dispatcher(routes: RouteDef[]) {
         const origin = req.headers.get("origin");
         const expected = new URL(p.config.appOrigin).origin;
         const host = (await headers()).get("host");
-        const sameHost = !!origin && !!host && new URL(origin).host === host;
+        // "null" and other unparseable origins are simply not ours.
+        const sameHost = !!origin && !!host && URL.canParse(origin) && new URL(origin).host === host;
         if (origin !== expected && !sameHost) throw new AppError(403, "bad_origin", "This request didn't come from the app.");
       }
       let session: SessionInfo | null = null;

@@ -15,6 +15,15 @@ Operators are the people running an instance, separate from any workspace role. 
 
 The CLI reads the same root key settings as web and worker (`AEGIS_ROOT_KEY`, `AEGIS_ROOT_KEY_FILE` or `AWS_KMS_KEY_ID`), so it starts under `NODE_ENV=production`; make sure the `migrate` container gets them.
 
+## Verifying an address without a mail relay
+An install with no SMTP relay can't send the verification link, so the "email isn't verified" banner would never clear. Two things clear it:
+- Connecting the **Gmail** mailbox for the sign-in address verifies the account on the spot, because Google only issues a token for an address to its owner. Microsoft mailboxes don't count: the address Graph reports can be set by that tenant's own administrator.
+- From a shell on the server:
+  ```sh
+  pnpm operators verify person@example.com
+  ```
+  It's recorded in the audit log as `auth.email_verified` with the reason `operator_cli`.
+
 ## What operators can't do, by construction
 Read mail, subjects, senders or mailbox addresses, act as a user, or export workspace data. Their database role, `aegis_operator`, has no table grants. It can only call `op.*` functions, and the role that owns those has column-level grants that exclude content. The one exception is deliberate: "owner contact" returns one owner's name and address, needs a reason, and is recorded in the operator log and in the workspace's own audit log. Someone with deploy rights or database superuser access isn't constrained by any of this: see "Mode A" in `docs/STATUS.md`.
 

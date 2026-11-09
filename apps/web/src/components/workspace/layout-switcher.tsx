@@ -6,6 +6,8 @@ import { usePrefs } from "@/lib/client";
 import { useEffect, useRef, useState } from "react";
 
 export type MailLayout = "split" | "full" | "by_account" | "by_action" | "chronological";
+/** What someone who never chose gets. One constant, so the switcher and the settings page show what the list is doing. */
+export const DEFAULT_LAYOUT: MailLayout = "full";
 export const LAYOUTS: { value: MailLayout; label: string; description: string; icon: LucideIcon }[] = [
   { value: "split", label: "Split", icon: Columns2, description: "List beside the open message." },
   { value: "full", label: "Full width", icon: Square, description: "The open message replaces the list." },
@@ -31,7 +33,7 @@ export function LayoutSwitcher() {
     window.addEventListener("mousedown", away);
     return () => { window.removeEventListener("keydown", key, true); window.removeEventListener("mousedown", away); };
   }, [open]);
-  const layout: MailLayout = prefs?.layout ?? "split";
+  const layout: MailLayout = prefs?.layout ?? DEFAULT_LAYOUT;
   const density = prefs?.density ?? "comfortable";
   const current = LAYOUTS.find(l => l.value === layout)!;
   return (

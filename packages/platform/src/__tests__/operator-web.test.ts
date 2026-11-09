@@ -34,7 +34,9 @@ describe("operator area through its routes", () => {
     webDb = new Db(login("aegis_web_login"), 5, { keyRole: "aegis_app" });
     workerDb = new Db(login("aegis_worker_login"), 5, { keyRole: "aegis_worker" });
     const kms = new LocalDevKms(randomBytes(32));
-    const shared = { kms, config: { demoMode: true, appOrigin: "http://localhost:3000", webauthnRpId: "localhost", anthropicApiKey: CANARY.anthropic }, log: makeLogger(() => {}), env: {} };
+    const shared = { kms, config: { demoMode: true, appOrigin: "http://localhost:3000", webauthnRpId: "localhost", ai: { provider: "openai" as const, apiKey: CANARY.anthropic } },
+      // A configured key now means every delivered message is sent for review. Nothing here should reach a real provider.
+      semantic: { id: "none", classify: async () => null }, log: makeLogger(() => {}), env: {} };
     web = createPlatform({ db: webDb, ...shared });
     worker = createPlatform({ db: workerDb, ...shared });
     adminP = createPlatform({ db: admin, ...shared });

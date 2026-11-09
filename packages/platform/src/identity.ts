@@ -110,6 +110,42 @@ export async function resendVerification(p: Platform, ctx: Ctx) {
   return { alreadyVerified: false };
 }
 
+/**
+ * Connecting a Gmail mailbox over OAuth proves the same thing the emailed link does: Google only hands out a token for
+ * an address to the person signed in to it. So when that address is the one the account signed up with, the account
+ * is verified, and an install with no mail relay isn't left with a banner nobody can clear.
+ *
+ * Gmail only. Microsoft Graph reports a `mail` attribute that a tenant's own administrator can set to any address, so
+ * it proves nothing about who owns that address.
+ */
+export async function verifyByConnectedMailbox(p: Platform, ctx: Ctx, provider: "gmail" | "microsoft", mailboxAddress: string): Promise<boolean> {
+  if (provider !== "gmail") return false;
+  return p.db.withSystem(async t => {
+    const u = await t.one("UPDATE users SET email_verified_at=now() WHERE id=$1 AND lower(email)=lower($2) AND email_verified_at IS NULL AND deleted_at IS NULL RETURNING id", [ctx.userId, mailboxAddress.trim()]);
+    if (!u) return false;
+    // The link that was emailed, if any, has nothing left to do.
+    await t.query("UPDATE email_tokens SET consumed_at=now() WHERE user_id=$1 AND purpose='verify_email' AND consumed_at IS NULL", [ctx.userId]);
+    await audit(t, { tenantId: ctx.tenantId, actor: ctx.userId, event: "auth.email_verified", meta: { provider, reason: "mailbox_oauth" } });
+    return true;
+  });
+}
+
+/**
+ * For the person who runs the server: marks an account's address verified from the command line. An install with no
+ * mail relay can't send the link, and whoever has a shell on the server already has the database.
+ */
+export async function verifyEmailAsOperator(p: Platform, email: string): Promise<"verified" | "already_verified" | "no_account"> {
+  return p.db.withSystem(async t => {
+    const u = await t.one<{ id: string; email_verified_at: Date | null }>("SELECT id, email_verified_at FROM users WHERE lower(email)=lower($1) AND deleted_at IS NULL", [email.trim()]);
+    if (!u) return "no_account";
+    if (u.email_verified_at) return "already_verified";
+    await t.query("UPDATE users SET email_verified_at=now() WHERE id=$1", [u.id]);
+    await t.query("UPDATE email_tokens SET consumed_at=now() WHERE user_id=$1 AND purpose='verify_email' AND consumed_at IS NULL", [u.id]);
+    await audit(t, { tenantId: await auditTenant(t, u.id), actor: null, event: "auth.email_verified", meta: { reason: "operator_cli" } });
+    return "verified";
+  });
+}
+
 /** A POST from the page behind the link, so a mail scanner that fetches links can't spend or complete it. */
 export async function confirmEmail(p: Platform, token: string, clientKey?: string) {
   if (clientKey) await rateLimit(p, `verify-confirm:${sha(clientKey)}`, 30, 900);

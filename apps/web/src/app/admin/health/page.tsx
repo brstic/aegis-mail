@@ -10,7 +10,7 @@ interface Health {
   worker: { ok: boolean; lastSeenAt: string | null };
   scanner: { configured: boolean; kind: string };
   kms: { type: string };
-  hostedAi: { configured: boolean };
+  hostedAi: { configured: boolean; provider: "openai" | "anthropic" | null };
   limits: { instanceDefaults: Record<string, number | null> };
   mail: { configured: boolean };
   deletionLog: { configured: boolean; ok: boolean; lastSeenAt: string | null };
@@ -44,7 +44,7 @@ export default function HealthPage() {
               <Row state={data.worker.ok ? "ok" : "bad"} label="Worker">{data.worker.lastSeenAt ? `Last heartbeat ${fmtDateTime(data.worker.lastSeenAt)}.` : "No heartbeat recorded. Is the worker running?"}</Row>
               <Row state={data.scanner.configured ? "ok" : "off"} label="Malware scanner">{data.scanner.configured ? "ClamAV is connected and scanning attachments." : "Built-in file checks only. ClamAV isn't connected."}</Row>
               <Row state={!data.kms.type.includes("dev") ? "ok" : data.demoMode ? "off" : "bad"} label="Key management">{KMS_LABEL[data.kms.type] ?? data.kms.type}.{data.kms.type.includes("dev") ? (data.demoMode ? " Expected in demo mode. Not for real data." : " Not for real data: connect a key management service.") : ""}</Row>
-              <Row state={data.hostedAi.configured ? "ok" : "off"} label="Hosted AI">{data.hostedAi.configured ? "API key set. People still opt in individually." : "Not configured. On-device features only."}</Row>
+              <Row state={data.hostedAi.configured ? "ok" : "off"} label="Hosted AI">{data.hostedAi.configured ? `${data.hostedAi.provider === "anthropic" ? "Anthropic" : "OpenAI"} key set. Every incoming message's security review uses it. Summaries and drafts are each person's choice.` : "Not configured. Detectors and on-device features only."}</Row>
               {(() => { const set = limitsText(data.limits.instanceDefaults); return <Row state={set.length ? "ok" : "off"} label="Limits">{set.length ? `Server defaults: ${set.join(", ")}. Each tenant's page can change them.` : "None. Server-wide defaults can be set with AEGIS_LIMIT_* settings."}</Row>; })()}
               <Row state={data.mail.configured ? "ok" : "off"} label="Transactional mail">{data.mail.configured ? "Configured." : "Not configured."}</Row>
               <Row state={!data.deletionLog.configured ? "off" : data.deletionLog.ok ? "ok" : "bad"} label="Deletion log">{!data.deletionLog.configured ? "Not reported by a worker. A restore wouldn't re-apply deletions." : data.deletionLog.ok ? "Shipping. Only counts as outside the database if it's on separate storage." : `Falling behind or stopped. Last healthy ${fmtDateTime(data.deletionLog.lastSeenAt!)}.`}</Row>

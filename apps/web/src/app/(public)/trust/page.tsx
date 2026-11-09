@@ -38,7 +38,7 @@ export default function TrustPage() {
         <ul className="grid gap-x-10 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
           {[
             ["Mail providers", "Gmail, Outlook, iCloud or any IMAP host: the mailboxes people connect, under their own terms. Gmail and Outlook need an OAuth app registered for the instance."],
-            ["Hosted AI model", "An Anthropic model, or a compatible endpoint you choose. It receives message content only for people who turn it on and consent."],
+            ["Hosted AI model", "An OpenAI model by default, or Anthropic, or a compatible endpoint you choose. On a server that has a key, it reviews every incoming message for attacks. It writes summaries and drafts only for people who turn that on."],
             ["Key management", "Holds the root key that wraps every workspace's keys. AWS KMS can hold it."],
             ["Malware scanner", "ClamAV, running as its own service inside the deployment, scans every attachment."],
             ["Email relay", "Sends verification, password reset and invitation email, and the digest for people who turn it on. It never carries anyone's mail."],

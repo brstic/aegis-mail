@@ -6,7 +6,7 @@ import { audit } from "./audit";
 import type { Platform } from "./context";
 import { deletionLogTick, recordErasure, shipDeletionLog } from "./deletion-log";
 import { shredTenantTx } from "./erasure";
-import { syncAccount } from "./ingest";
+import { recheckHeld, syncAccount } from "./ingest";
 import { claimJob, DeferJob, enqueue, finishJob, PermanentJobError, reapStuckJobs, sweepExpired, type ClaimedJob } from "./jobs";
 import { resealTenant } from "./keys";
 import { finishMemberRemoval, recheckDomains } from "./org";
@@ -104,6 +104,7 @@ export async function runJob(p: Platform, job: ClaimedJob) {
   switch (job.kind) {
     case "sync.account": return syncAccount(p, tenantId, job.payload.accountId);
     case "provider.change": return providerChange(p, job);
+    case "quarantine.recheck": await recheckHeld(p, tenantId, job.payload.accountId); return;
     case "send.execute": return executeSend(p, tenantId, job.payload.approvalId);
     case "send.reconcile": return reconcileSend(p, tenantId, job.payload.approvalId, job.attempts, job.max_attempts);
     case "push.renew": return renewPush(p, job);
@@ -152,11 +153,14 @@ export async function tick(p: Platform) {
       // Catches up mail from before this was switched on, and anything whose job died. A dedupe key only covers active jobs, so at most hourly is checked here.
       if (p.embeddings && !(await t.one("SELECT 1 FROM jobs WHERE kind='embed.backfill' AND tenant_id=$1 AND payload->>'accountId'=$2 AND created_at > now() - interval '1 hour' LIMIT 1", [a.tenant_id, a.id]))) await enqueue(t, { tenantId: a.tenant_id, kind: "embed.backfill", payload: { accountId: a.id }, dedupeKey: `embed-backfill:${a.id}:tick` });
       const cap = CAPABILITIES[a.kind as ProviderKind];
+      // A provider can push only when this deployment gave it somewhere to push to. Without a Pub/Sub topic or a webhook
+      // address, the mailbox is polled like any other: otherwise new mail would wait for the six-hourly reconcile.
+      const push = cap.pushNotifications && (a.kind === "gmail" ? !!p.config.google?.pubsubTopic : a.kind === "microsoft" ? !!p.config.microsoft?.webhookUrl : true);
       // Push providers still reconcile periodically, because notifications can be dropped.
-      const interval = (cap.pushNotifications ? 6 * 3600 : cap.latencyBudgetSeconds) * 1000;
+      const interval = (push ? 6 * 3600 : cap.latencyBudgetSeconds) * 1000;
       const last = a.last_attempt_at ? new Date(a.last_attempt_at).getTime() : 0;
       if (now - last >= interval) await enqueue(t, { tenantId: a.tenant_id, kind: "sync.account", payload: { accountId: a.id }, dedupeKey: `sync:${a.id}` });
-      if (cap.pushNotifications) {
+      if (push) {
         const exp = a.push_expires_at ? new Date(a.push_expires_at).getTime() : 0;
         // Gmail wants daily renewal; Graph max is under 7 days. A day's margin covers both.
         if (exp - now < 24 * 3600_000) await enqueue(t, { tenantId: a.tenant_id, kind: "push.renew", payload: { accountId: a.id }, dedupeKey: `renew:${a.id}` });
@@ -212,7 +216,17 @@ export async function drainJobs(p: Platform, max = 1000): Promise<number> {
   return n;
 }
 
+/** How often a running job renews its lease. Well inside reapStuckJobs' window, so only a dead worker's jobs are reaped. */
+const LEASE_RENEW_MS = 30_000;
+
 async function runOne(p: Platform, job: ClaimedJob) {
+  // A first sync of a large mailbox runs longer than any fixed lease. Without renewal the reaper would hand the same
+  // mailbox to a second loop while the first was still working on it.
+  const renew = setInterval(() => { void p.db.withSystem(t => t.query("UPDATE jobs SET locked_at=now() WHERE id=$1 AND state='running'", [job.id])).catch(() => {}); }, LEASE_RENEW_MS);
+  try { await runOneLeased(p, job); } finally { clearInterval(renew); }
+}
+
+async function runOneLeased(p: Platform, job: ClaimedJob) {
   try { await traced(`job.${job.kind}`, { jobId: job.id, jobKind: job.kind, attempt: job.attempts, traceId: job.trace_id }, () => runJob(p, job)); await finishJob(p, job); }
   catch (e) {
     await finishJob(p, job, e, (j, c) => onDead(p, j, c)).catch(err => p.log.error("job.finish_failed", { jobId: job.id, errorCode: errorCode(err) }));

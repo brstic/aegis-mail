@@ -29,16 +29,20 @@ describe("features that have to be connected, not just exist", () => {
 
   describe("hosted semantic step", () => {
     const hosted = (classify: ReturnType<typeof vi.fn>) => ({ id: "h", model: "m", hosted: true, summarize: async () => ({ bullets: [], basis: "model" as const }), actions: async () => [], draft: async () => ({ text: "", subject: "", assumptions: [], basis: "model" as const }), semanticClassifier: () => ({ id: "h", classify }) }) as InferenceProvider;
-    it("never sees mail unless the owner consented", async () => {
+    it("reads every mailbox's mail once the server has a model, whatever the owner's own AI settings say", async () => {
       const classify = vi.fn(async () => ({ evidence: [] }));
       p.inferenceOverride = () => hosted(classify);
-      await deliver(p, ctx, acct, { from: "a@b.test", subject: "No consent", text: "x" });
-      expect(classify).not.toHaveBeenCalled();
+      await deliver(p, ctx, acct, { from: "a@b.test", subject: "No consent asked", text: "x" });
+      expect(classify).toHaveBeenCalledOnce();
+      // Turning AI off for yourself is about summaries and drafts. It doesn't switch off a security check.
+      await updatePrefs(p, ctx, { aiEnabled: false, hostedModelConsent: false });
+      await deliver(p, ctx, acct, { from: "a@b.test", subject: "AI off for me", text: "y" });
+      expect(classify).toHaveBeenCalledTimes(2);
+      await updatePrefs(p, ctx, { aiEnabled: true });
       p.inferenceOverride = undefined;
     });
-    it("runs with consent, and catches what rules miss", async () => {
+    it("catches what rules miss", async () => {
       const classify = vi.fn(async () => ({ evidence: [{ code: "LLM_SOCIAL_ENGINEERING", weight: 2.5, category: "bec" as const, source: "llm" as const, explanation: "Asks to settle a balance off the usual thread." }] }));
-      await updatePrefs(p, ctx, { hostedModelConsent: true });
       p.inferenceOverride = () => hosted(classify);
       const m = await deliver(p, ctx, acct, { from: `"Priya" <priya@oak-ridge-consulting.test>`, subject: "Small thing", text: "Could you do me a kindness and sort the balance today? I'm travelling." });
       expect(classify).toHaveBeenCalledOnce();
@@ -51,7 +55,6 @@ describe("features that have to be connected, not just exist", () => {
       await deliver(p, ctx, acct, { from: "a@b.test", subject: "Tenant off", text: "x" });
       expect(classify).not.toHaveBeenCalled();
       await updatePolicy(p, ctx, { hostedModelsDisabled: false } as never);
-      await updatePrefs(p, ctx, { hostedModelConsent: false });
       p.inferenceOverride = undefined;
     });
   });

@@ -2,7 +2,7 @@ locals {
   clamd_host = "clamd.${var.name}.internal"
   # Which process may see which secret. A process that isn't given a database login can't use it.
   web_secrets     = ["DATABASE_URL_WEB", "GOOGLE_CLIENT_SECRET", "MICROSOFT_CLIENT_SECRET"]
-  worker_secrets  = ["DATABASE_URL_WORKER", "GOOGLE_CLIENT_SECRET", "MICROSOFT_CLIENT_SECRET", "ANTHROPIC_API_KEY"]
+  worker_secrets  = ["DATABASE_URL_WORKER", "GOOGLE_CLIENT_SECRET", "MICROSOFT_CLIENT_SECRET", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
   migrate_secrets = ["DATABASE_URL"]
   log_config = { for svc in ["web", "worker", "clamd", "migrate"] : svc => {
     logDriver = "awslogs"

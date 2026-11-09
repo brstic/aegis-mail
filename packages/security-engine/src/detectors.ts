@@ -1,7 +1,7 @@
 import type { Evidence } from "@aegis/domain";
 import type { ParsedMail, ExtractedUrl } from "@aegis/mail-parser";
 import { emailDomain, hostOf } from "@aegis/mail-parser";
-import { brandInText, FREE_MAIL, findLookalike, registrableDomain, sameOrganization, SUSPICIOUS_TLDS, URL_SHORTENERS, decodeIdnHost, hasMixedScript } from "./domains";
+import { brandClaimedBy, brandInText, brandOwning, FREE_MAIL, findLookalike, registrableDomain, sameOrganization, SUSPICIOUS_TLDS, URL_SHORTENERS, decodeIdnHost, hasMixedScript, type Brand, type LookalikeHit } from "./domains";
 
 export interface RelationshipContext {
   /** Prior messages from this exact address. */
@@ -22,11 +22,15 @@ export interface RelationshipContext {
   ownDomains: string[];
   /** Display names of the mailbox owner, lowercased. External mail using them is impersonation. */
   ownerNames: string[];
+  /** Every address the owner has connected, with aliases, lowercased. Mail between someone's own mailboxes is theirs. */
+  ownAddresses: string[];
+  /** The owner released mail from this sender, or said it wasn't a threat. */
+  senderTrusted: boolean;
   isVip: boolean;
 }
 
 export const EMPTY_RELATIONSHIP: RelationshipContext = {
-  senderMessageCount: 0, domainMessageCount: 0, repliedTo: false, threadKnown: false, threadDomains: [], knownDomains: [], knownNames: [], ownDomains: [], ownerNames: [], isVip: false,
+  senderMessageCount: 0, domainMessageCount: 0, repliedTo: false, threadKnown: false, threadDomains: [], knownDomains: [], knownNames: [], ownDomains: [], ownerNames: [], ownAddresses: [], senderTrusted: false, isVip: false,
 };
 
 interface AuthFindings { spf?: string; dkim?: string; dmarc?: string; arc?: string; dkimDomains: string[]; spfDomain?: string; headerPresent: boolean; arcVerified: boolean }
@@ -45,6 +49,34 @@ export function parseAuthResults(mail: ParsedMail): AuthFindings {
   };
 }
 
+
+/**
+ * What's established about the sender before any content is read. Everything here needs the provider's DMARC verdict
+ * not to be a failure, since the From address is otherwise only a claim.
+ */
+export interface SenderStanding {
+  fromDomain: string;
+  authenticated: boolean;
+  /** The address is one of the owner's own connected mailboxes. */
+  ownAddress: boolean;
+  /** The owner vouched for this sender by releasing its mail. */
+  trusted: boolean;
+}
+
+export function senderStanding(mail: ParsedMail, rel: RelationshipContext): SenderStanding {
+  const address = (mail.from?.address ?? "").toLowerCase();
+  const fromDomain = emailDomain(address);
+  const dmarc = parseAuthResults(mail).dmarc;
+  const authenticated = dmarc === "pass";
+  const notForged = dmarc !== "fail";
+  return {
+    fromDomain, authenticated,
+    ownAddress: !!address && notForged && (rel.ownAddresses ?? []).includes(address),
+    trusted: !!rel.senderTrusted && notForged,
+  };
+}
+
+const mentions = (brand: string, text: string) => new RegExp(`(^|[^a-z])${brand.toLowerCase().replace(/ /g, "\\s*")}([^a-z]|$)`).test(text.toLowerCase());
 
 export function authDetector(mail: ParsedMail): Evidence[] {
   const a = parseAuthResults(mail);
@@ -68,7 +100,7 @@ export function authDetector(mail: ParsedMail): Evidence[] {
   return out;
 }
 
-export function headerDetector(mail: ParsedMail, rel: RelationshipContext, protectedDomains: string[]): Evidence[] {
+export function headerDetector(mail: ParsedMail, rel: RelationshipContext, protectedDomains: string[], standing: SenderStanding = senderStanding(mail, rel)): Evidence[] {
   const out: Evidence[] = [];
   const fromAddr = mail.from?.address ?? "";
   const fromDomain = emailDomain(fromAddr);
@@ -77,22 +109,33 @@ export function headerDetector(mail: ParsedMail, rel: RelationshipContext, prote
 
   if (!fromAddr) out.push({ code: "HDR_NO_FROM", weight: 1.5, source: "headers", explanation: "The message has no valid From address." });
 
+  // The owner's own mailbox, or a sender the owner vouched for, isn't checked for resembling someone else.
+  const vouched = standing.ownAddress || standing.trusted;
+
   // Lookalike sender domain.
-  if (fromDomain) {
-    const hit = findLookalike(fromDomain, extra);
-    if (hit) {
-      const isOwn = rel.ownDomains.some(d => registrableDomain(d) === hit.target);
+  const hit = fromDomain && !vouched ? findLookalike(fromDomain, extra) : null;
+  if (hit) {
+    const isOwn = rel.ownDomains.some(d => registrableDomain(d) === hit.target);
+    const shown = decodeIdnHost(fromDomain);
+    if (hit.kind === "tld_variant") {
+      out.push({ code: "HDR_FROM_TLD_VARIANT", weight: hit.brand ? 2.0 : isOwn ? 1.6 : 1.2, category: hit.brand ? "brand_spoof" : "bec", source: "headers",
+        explanation: `The sender's domain "${shown}" has the same name as ${hit.brand ?? hit.target} with a different ending. Organizations often own both, and so can an impersonator.` });
+    } else if (hit.nearMiss && hit.brand && !mentions(hit.brand, `${name}\n${analysisText(mail)}`)) {
+      // strike.com beside stripe.com. A real name that never claims to be the brand is a coincidence.
+      out.push({ code: "HDR_FROM_NEAR_MISS", weight: 0.6, source: "headers", explanation: `The sender's domain "${shown}" is spelled much like ${hit.brand}'s, though the message doesn't claim to be from ${hit.brand}.` });
+    } else {
       out.push({
         code: hit.kind === "homograph" ? "HDR_FROM_HOMOGRAPH" : "HDR_FROM_LOOKALIKE", weight: isOwn ? 3.8 : 3.2,
         category: hit.brand ? "brand_spoof" : "bec", source: "headers",
-        explanation: `The sender's domain "${decodeIdnHost(fromDomain)}" closely resembles ${hit.brand ?? hit.target}, but it isn't the same domain.`,
+        explanation: `The sender's domain "${shown}" closely resembles ${hit.brand ?? hit.target}, but it isn't the same domain.`,
       });
     }
   }
 
-  // Display-name impersonation of a brand.
-  const nameBrand = name ? brandInText(name) : null;
-  if (nameBrand && fromDomain && !nameBrand.domains.some(d => sameOrganization(d, fromDomain))) {
+  // Display-name impersonation of a brand. A free mail address is never the brand, even one the brand runs.
+  const nameBrand = name ? brandClaimedBy(name) : null;
+  const sameFact = hit?.kind === "tld_variant" && hit.brand === nameBrand?.name;
+  if (nameBrand && fromDomain && !sameFact && (brandOwning(fromDomain)?.brand !== nameBrand || FREE_MAIL.has(registrableDomain(fromDomain)))) {
     out.push({ code: "HDR_DISPLAY_BRAND_MISMATCH", weight: 2.6, category: "brand_spoof", source: "headers", explanation: `The display name says "${name}", but the message came from ${fromDomain}, not a ${nameBrand.name} domain.` });
   }
 
@@ -103,13 +146,13 @@ export function headerDetector(mail: ParsedMail, rel: RelationshipContext, prote
   }
 
   // Known correspondent's name from a new domain.
-  if (name.length >= 5 && fromDomain) {
+  if (name.length >= 5 && fromDomain && !vouched) {
     const known = rel.knownNames.find(k => k.name === name.toLowerCase() && !sameOrganization(k.domain, fromDomain));
     if (known) out.push({ code: "HDR_KNOWN_NAME_NEW_DOMAIN", weight: 2.5, category: "bec", source: "relationship", explanation: `"${name}" usually writes from ${known.domain}, but this message came from ${fromDomain}.` });
   }
 
   // Someone outside the mailbox owner's domains using the owner's own name: classic executive fraud.
-  if (name && rel.ownerNames.includes(name.toLowerCase()) && fromDomain && !rel.ownDomains.some(d => sameOrganization(d, fromDomain))) {
+  if (name && !vouched && rel.ownerNames.includes(name.toLowerCase()) && fromDomain && !rel.ownDomains.some(d => sameOrganization(d, fromDomain))) {
     out.push({ code: "HDR_OWNER_NAME_SPOOF", weight: 2.2, category: "bec", source: "headers", explanation: `The display name is your own name, "${name}", but the message came from ${fromDomain}, outside your domains.` });
   }
 
@@ -145,7 +188,7 @@ export function headerDetector(mail: ParsedMail, rel: RelationshipContext, prote
   if (claimsReply && !mail.inReplyTo && !mail.references.length && !rel.threadKnown) {
     out.push({ code: "THREAD_FAKE_REPLY", weight: 1.3, category: "reply_chain_hijack", source: "headers", explanation: `The subject looks like a reply, but it isn't part of any existing conversation.` });
   }
-  if (rel.threadKnown && fromDomain && rel.threadDomains.length && !rel.threadDomains.some(d => sameOrganization(d, fromDomain))) {
+  if (rel.threadKnown && fromDomain && !vouched && rel.threadDomains.length && !rel.threadDomains.some(d => sameOrganization(d, fromDomain))) {
     out.push({ code: "THREAD_NEW_DOMAIN", weight: 1.7, category: "reply_chain_hijack", source: "relationship", explanation: `A sender from a new domain (${fromDomain}) joined this conversation. Earlier messages came from ${rel.threadDomains.slice(0, 3).join(", ")}.` });
   }
   return out;
@@ -153,7 +196,23 @@ export function headerDetector(mail: ParsedMail, rel: RelationshipContext, prote
 
 const LOGIN_PATH = /(login|signin|sign-in|verify|account|secure|password|credential|auth|sso|webscr|update-info|validate|wallet|unlock)/i;
 
-function urlEvidence(u: ExtractedUrl, senderDomain: string, rel: RelationshipContext, protectedDomains: string[], fromQr: boolean): Evidence[] {
+/** Endings that are file types far more often than web addresses when they appear as bare link text. */
+const FILE_ENDINGS = new Set(["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "zip", "rar", "png", "jpg", "jpeg", "gif", "svg", "js", "ts", "md", "json", "xml", "html", "htm", "php", "py", "sh", "exe", "ics", "eml", "mp3", "mp4", "mov"]);
+const COMMON_ENDINGS = new Set(["com", "net", "org", "edu", "gov", "mil", "int", "info", "biz", "app", "dev", "xyz", "online", "site", "shop", "store", "tech", "cloud", "top", "club", "live", "pro", "email", "link", "click", "page", "blog", "news", "bank", "test", "example"]);
+
+/** The web address a link's visible text claims, if the text contains one. File names, email addresses and ordinary words with a dot aren't addresses. */
+export function shownHost(text: string): string | null {
+  for (const m of text.slice(0, 2000).matchAll(/(?<![@\w.-])(https?:\/\/|www\.)?((?:[a-z0-9-]+\.)+[a-z]{2,24})(?![\w@-])/gi)) {
+    const host = m[2]!.toLowerCase(), ending = host.split(".").pop()!;
+    if (m[1] || (!FILE_ENDINGS.has(ending) && (ending.length === 2 || COMMON_ENDINGS.has(ending)))) return host;
+  }
+  return null;
+}
+
+interface UrlContext { senderDomain: string; rel: RelationshipContext; protectedDomains: string[]; fromQr: boolean; standing: SenderStanding; brandText: string }
+
+function urlEvidence(u: ExtractedUrl, ctx: UrlContext): Evidence[] {
+  const { senderDomain, rel, protectedDomains, fromQr } = ctx;
   const out: Evidence[] = [];
   const prefix = fromQr ? "A QR code in this message points to" : "A link points to";
   const cat = fromQr ? "qr_phish" as const : "malicious_link" as const;
@@ -180,8 +239,10 @@ function urlEvidence(u: ExtractedUrl, senderDomain: string, rel: RelationshipCon
     if (reg && !sameAsSender && LOGIN_PATH.test(parsed.pathname + parsed.hostname)) out.push({ code: "URL_CREDENTIAL_PATH", weight: 0.9, category: "credential_phish", source: "url", explanation: `A link on ${display} looks like a sign-in or verification page, and it isn't on the sender's domain.` });
   } catch { /* extractUrls already filtered unparsable hrefs */ }
 
-  const hit = findLookalike(host, [...protectedDomains, ...rel.knownDomains, ...rel.ownDomains]);
-  if (hit) out.push({ code: hit.kind === "homograph" ? "URL_HOMOGRAPH" : "URL_LOOKALIKE", weight: 3.4, category: fromQr ? "qr_phish" : "credential_phish", source: "url", explanation: `${prefix} ${display}, which imitates ${hit.brand ?? hit.target}.` });
+  // The sender's own domain was already judged in the headers. Counting its links again would turn one fact into two.
+  const hit: LookalikeHit | null = sameAsSender ? null : findLookalike(host, [...protectedDomains, ...rel.knownDomains, ...rel.ownDomains]);
+  if (hit?.kind === "tld_variant") out.push({ code: "URL_TLD_VARIANT", weight: hit.brand ? 1.6 : 0.8, category: cat, source: "url", explanation: `${prefix} ${display}, which has the same name as ${hit.brand ?? hit.target} with a different ending.` });
+  else if (hit && !(hit.nearMiss && hit.brand && !mentions(hit.brand, ctx.brandText))) out.push({ code: hit.kind === "homograph" ? "URL_HOMOGRAPH" : "URL_LOOKALIKE", weight: 3.4, category: fromQr ? "qr_phish" : "credential_phish", source: "url", explanation: `${prefix} ${display}, which imitates ${hit.brand ?? hit.target}.` });
   else if (host.startsWith("xn--") || host.includes(".xn--")) {
     const label = display.split(".")[0] ?? "";
     if (hasMixedScript(label)) out.push({ code: "URL_MIXED_SCRIPT", weight: 2.2, category: cat, source: "url", explanation: `A link's address (${display}) mixes alphabets, a trick to imitate another site.` });
@@ -191,25 +252,26 @@ function urlEvidence(u: ExtractedUrl, senderDomain: string, rel: RelationshipCon
   if (SUSPICIOUS_TLDS.has(tld) && !sameAsSender) out.push({ code: "URL_SUSPICIOUS_TLD", weight: 0.9, category: cat, source: "url", explanation: `A link uses the domain ending ".${tld}", which is frequently abused.` });
 
   // Visible text claims a different domain than the real destination.
-  const shown = u.text?.trim();
-  if (shown && u.source === "html") {
-    const m = shown.match(/(?:https?:\/\/)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?:[/\s]|$)/i);
-    if (m) {
-      const shownHost = m[1]!.toLowerCase();
-      if (!sameOrganization(shownHost, host)) out.push({ code: "URL_TEXT_MISMATCH", weight: 2.8, category: cat, source: "url", explanation: `A link displays "${shownHost}" but really goes to ${display}.` });
-    }
+  const shown = u.source === "html" && u.text ? shownHost(u.text) : null;
+  if (shown && !sameOrganization(shown, host)) {
+    // A sender showing its own name over a tracking link is how newsletters are built. Two domains of one brand aren't a disguise either.
+    const ownName = ctx.standing.authenticated && sameOrganization(shown, senderDomain);
+    const shownBrand = brandOwning(shown)?.brand;
+    const sameBrand = !!shownBrand && shownBrand === brandOwning(host)?.brand;
+    if (!ownName && !sameBrand) out.push({ code: "URL_TEXT_MISMATCH", weight: 2.8, category: cat, source: "url", explanation: `A link displays "${shown}" but really goes to ${display}.` });
   }
   if (fromQr) out.push({ code: "QR_LINK", weight: 1.6, category: "qr_phish", source: "url", explanation: `An image contains a QR code that goes to ${display}. QR codes bypass the warnings normally shown for links.` });
   return out;
 }
 
-export function urlDetector(mail: ParsedMail, rel: RelationshipContext, protectedDomains: string[], qrUrls: string[], fileUrls: string[] = []): Evidence[] {
+export function urlDetector(mail: ParsedMail, rel: RelationshipContext, protectedDomains: string[], qrUrls: string[], fileUrls: string[] = [], standing: SenderStanding = senderStanding(mail, rel)): Evidence[] {
   const senderDomain = emailDomain(mail.from?.address);
+  const ctx = (fromQr: boolean): UrlContext => ({ senderDomain, rel, protectedDomains, fromQr, standing, brandText: `${mail.from?.name ?? ""}\n${analysisText(mail)}` });
   const all: Evidence[] = [];
-  for (const u of mail.urls) all.push(...urlEvidence(u, senderDomain, rel, protectedDomains, false));
+  for (const u of mail.urls) all.push(...urlEvidence(u, ctx(false)));
   // Links inside attachments (PDF, Office, HTML) are checked like links in the message.
-  for (const href of fileUrls) { const host = hostOf(href); if (host) all.push(...urlEvidence({ href, host, source: "text" }, senderDomain, rel, protectedDomains, false)); }
-  for (const href of qrUrls) { const host = hostOf(href); if (host) all.push(...urlEvidence({ href, host, source: "text" }, senderDomain, rel, protectedDomains, true)); }
+  for (const href of fileUrls) { const host = hostOf(href); if (host) all.push(...urlEvidence({ href, host, source: "text" }, ctx(false))); }
+  for (const href of qrUrls) { const host = hostOf(href); if (host) all.push(...urlEvidence({ href, host, source: "text" }, ctx(true))); }
   // De-duplicate by code: a link repeated ten times is still one piece of evidence.
   const seen = new Set<string>();
   return all.filter(e => (seen.has(e.code) ? false : (seen.add(e.code), true)));
@@ -361,6 +423,9 @@ export function relationshipDetector(mail: ParsedMail, rel: RelationshipContext)
     out.push({ code: "REL_INTERNAL_AUTHENTICATED", weight: -1.0, source: "relationship", explanation: "It's authenticated mail from your own organization's domain." });
     return out;
   }
+  const standing = senderStanding(mail, rel);
+  if (standing.ownAddress) return [{ code: "REL_OWN_ADDRESS", weight: -1.0, source: "relationship", explanation: "It came from one of your own connected mailboxes." }];
+  if (standing.trusted) out.push({ code: "REL_SENDER_TRUSTED", weight: -2.0, source: "relationship", explanation: "Mail from this sender was reviewed and cleared before." });
   if (rel.senderMessageCount === 0 && rel.domainMessageCount === 0) out.push({ code: "REL_FIRST_CONTACT", weight: 0.35, source: "relationship", explanation: "This is the first message from this sender." });
   else if (rel.repliedTo && rel.senderMessageCount >= 3) out.push({ code: "REL_ESTABLISHED", weight: -1.1, source: "relationship", explanation: "You've exchanged several messages with this sender." });
   else if (rel.senderMessageCount >= 3) out.push({ code: "REL_RECURRING", weight: -0.4, source: "relationship", explanation: "You've received several messages from this sender." });
@@ -371,7 +436,7 @@ export function brandContentMismatch(mail: ParsedMail): Evidence[] {
   const domain = emailDomain(mail.from?.address);
   if (!domain) return [];
   const brand = brandInText(mail.subject);
-  if (!brand || brand.domains.some(d => sameOrganization(d, domain))) return [];
+  if (!brand || (brandOwning(domain)?.brand === brand && !FREE_MAIL.has(registrableDomain(domain)))) return [];
   if (!mail.urls.length) return [];
   const hasCred = /\b(sign in|log ?in|verify|password|account|confirm)\b/i.test(analysisText(mail));
   if (!hasCred) return [];

@@ -24,7 +24,8 @@ const VIEW_WHERE: Record<string, string> = {
   focus: "m.folder_role='inbox'",
   important: "m.folder_role='inbox' AND NOT m.held AND (m.priority_section IN ('needs_attention','important_people','todays_commitments') OR m.is_starred)",
   starred: "m.is_starred AND NOT m.held",
-  awaiting: "m.from_me AND m.folder_role='sent'",
+  // Your message is the last word in the conversation. One that was answered isn't awaiting anything.
+  awaiting: "m.from_me AND m.folder_role='sent' AND EXISTS (SELECT 1 FROM threads aw WHERE aw.id=m.thread_id AND aw.last_from_me)",
   sent: "m.folder_role='sent'",
   archive: "m.folder_role='archive' AND NOT m.held",
   spam: "m.folder_role='spam' AND NOT m.held",
@@ -85,7 +86,8 @@ export async function listThreads(p: Platform, ctx: Ctx, q: { view: string; acco
   const where: string[] = ["m.tombstoned_at IS NULL", "m.state IN ('classified','failed')"];
   const parsed = q.q ? parseSearch(q.q) : null;
   let meaningScope: { where: string[]; params: unknown[] } | null = null;
-  const viewCond = parsed ? "NOT m.held" : VIEW_WHERE[q.view] ?? VIEW_WHERE.inbox!;
+  // A label is its own view over everything it's on, archived mail included. The Labels page counts it that way.
+  const viewCond = parsed ? "NOT m.held" : q.labelId ? "NOT m.held AND m.folder_role NOT IN ('trash','spam')" : VIEW_WHERE[q.view] ?? VIEW_WHERE.inbox!;
   // Search includes quarantine only when explicitly asked, so a held phish isn't surfaced as a normal result.
   where.push(parsed?.risk || parsed?.flagged ? "TRUE" : viewCond);
   if (q.accountId) where.push(`m.account_id=${add(q.accountId)}`);
@@ -331,7 +333,9 @@ export async function inspectLink(p: Platform, ctx: Ctx, messageId: string, href
   const host = hostOf(href);
   if (!host || !/^https?:/i.test(href)) throw badRequest("bad_link", "That link can't be opened.");
   const { findLookalike, decodeIdnHost } = await import("@aegis/security-engine");
-  const hit = findLookalike(host);
+  // Only a deliberate imitation is worth interrupting someone for: the same name under another ending, or a real name spelled alike, isn't one.
+  const found = findLookalike(host);
+  const hit = found && found.kind !== "tld_variant" && !found.nearMiss ? found : null;
   await p.db.withUser(ctx, t => t.query("SELECT 1"));
   return { href, host: decodeIdnHost(host), risk: r.risk_label, lookalike: hit ? hit.brand ?? hit.target : null, blocked: r.risk_label === "malicious", insecure: href.startsWith("http:") };
 }
@@ -340,14 +344,20 @@ export async function markRead(t: Tx, id: string) { await t.query("UPDATE messag
 
 /** The relationship graph, inspectable. Strength is evidence, not a trust rating, and the UI says so. */
 export async function listContacts(p: Platform, ctx: Ctx, accountId?: string) {
-  const rows = await p.db.withUser(ctx, t => t.query<any>(`SELECT c.*, a.display_name FROM contacts c JOIN mail_accounts a ON a.id=c.account_id WHERE c.identity_enc IS NOT NULL ${accountId ? "AND c.account_id=$1" : ""} ORDER BY c.is_vip DESC, c.received_count + c.sent_to_count DESC LIMIT 200`, accountId ? [accountId] : []));
+  const rows = await p.db.withUser(ctx, t => t.query<any>(`SELECT c.*, a.display_name FROM contacts c JOIN mail_accounts a ON a.id=c.account_id WHERE c.identity_enc IS NOT NULL ${accountId ? "AND c.account_id=$1" : ""} ORDER BY c.is_vip DESC, (c.trusted_at IS NOT NULL) DESC, c.received_count + c.sent_to_count DESC LIMIT 200`, accountId ? [accountId] : []));
   return Promise.all(rows.map(async r => ({
     id: r.id, accountId: r.account_id, account: r.display_name, received: r.received_count, sentTo: r.sent_to_count, replied: r.replied_count, dismissed: r.dismissed_count, vip: r.is_vip, ignored: r.is_ignored, lastSeenAt: r.last_seen_at,
+    // A sender exception: flagged mail from them was reviewed and cleared. Who decided, and how far it reaches.
+    exception: r.trusted_at ? { scope: r.trusted_scope as "sender" | "domain", by: r.trusted_by as "ai" | "user", at: r.trusted_at } : null,
     ...(await p.envelope.openJson<{ name?: string; address: string }>({ tenantId: ctx.tenantId, keyClass: "metadata", table: "contacts", recordId: r.id }, r.identity_enc)),
   })));
 }
-export async function setContact(p: Platform, ctx: Ctx, id: string, patch: { vip?: boolean; ignored?: boolean }) {
-  const r = await p.db.withUser(ctx, t => t.query("UPDATE contacts SET is_vip=COALESCE($2,is_vip), is_ignored=COALESCE($3,is_ignored) WHERE id=$1 RETURNING id", [id, patch.vip ?? null, patch.ignored ?? null]));
+export async function setContact(p: Platform, ctx: Ctx, id: string, patch: { vip?: boolean; ignored?: boolean; /** Only `false`: an exception is removed here, never granted. */ exception?: false }) {
+  const drop = patch.exception === false;
+  const r = await p.db.withUser(ctx, t => t.query(
+    `UPDATE contacts SET is_vip=COALESCE($2,is_vip), is_ignored=COALESCE($3,is_ignored),
+       trusted_at=CASE WHEN $4 THEN NULL ELSE trusted_at END, trusted_scope=CASE WHEN $4 THEN NULL ELSE trusted_scope END, trusted_by=CASE WHEN $4 THEN NULL ELSE trusted_by END
+     WHERE id=$1 RETURNING id`, [id, patch.vip ?? null, patch.ignored ?? null, drop]));
   if (!r.length) {
     const visible = await p.db.withUser(ctx, t => t.one("SELECT 1 FROM contacts WHERE id=$1", [id]));
     if (visible) throw new AppError(403, "read_only_access", "You have read-only access to this mailbox.");

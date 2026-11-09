@@ -11,7 +11,7 @@ import { api, ApiError, isGoChord, onInteractive, relTime, useAccounts, useActio
 import { latencyLabel, usePrefPatch } from "../settings/common";
 import { Avatar, Banner, Button, Chip, EmptyState, ErrorState, IconButton, ListSkeleton, RiskBadge } from "../ui";
 import { LabelDialog, type LabelTarget } from "./label-dialog";
-import { LayoutSwitcher, type MailLayout } from "./layout-switcher";
+import { DEFAULT_LAYOUT, LayoutSwitcher, type MailLayout } from "./layout-switcher";
 import { SearchPanel, type SemanticOutcome } from "./search-panel";
 import { ThreadDetail, type ThreadControls } from "./thread-detail";
 import { useWorkspace } from "./shell";
@@ -132,7 +132,8 @@ function useMailKeys(items: ThreadRow[], selected: string | null, go: (id: strin
 }
 
 function SyncStatus({ accounts }: { accounts: Account[] }) {
-  const syncing = accounts.filter(a => a.status === "active" && a.sync.phase === "initial");
+  // A first sync that keeps failing is trouble, not progress: say so rather than "still syncing" for ever.
+  const syncing = accounts.filter(a => a.status === "active" && a.sync.phase === "initial" && !a.sync.lastError);
   if (syncing.length) return <div className="px-3 pt-2"><Banner tone="info" icon={Wifi}>Still syncing {syncing.map(a => a.displayName).join(", ")}. {syncing.reduce((s, a) => s + a.sync.messagesSynced, 0)} messages so far. Results here may be partial.</Banner></div>;
   const failing = accounts.filter(a => a.sync.lastError && a.status === "active");
   if (failing.length) return <div className="px-3 pt-2"><Banner tone="warn">Having trouble syncing {failing.map(a => a.displayName).join(", ")}. We'll keep retrying. What's shown may be out of date.</Banner></div>;
@@ -218,7 +219,7 @@ export function MailView({ view, query, concepts = false, semantic = false }: { 
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [labelTargets, setLabelTargets] = useState<LabelTarget[] | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ low_priority: true });
-  const layout: MailLayout = prefs?.layout ?? "full";
+  const layout: MailLayout = prefs?.layout ?? DEFAULT_LAYOUT;
   const hiddenSections: string[] = prefs?.hiddenSections ?? [];
   const pinnedSections: string[] = prefs?.pinnedSections ?? [];
 

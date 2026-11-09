@@ -107,7 +107,7 @@ export function VerifyEmailBanner({ email, mailAvailable, demo }: { email: strin
     <section aria-label="Verify your email" data-testid="verify-banner" className="flex flex-wrap items-center gap-2 rounded-lg bg-info-soft px-3 py-2 text-[13px] text-info">
       <p className="min-w-0 flex-1 basis-60 [overflow-wrap:anywhere]">
         {!mailAvailable
-          ? <><strong className="font-semibold">Your email isn&apos;t verified, and this deployment can&apos;t send mail yet.</strong> An administrator needs to set up a mail relay before you can accept invitations.</>
+          ? <><strong className="font-semibold">Your email isn&apos;t verified yet.</strong> This server has no mail relay to send a link, so there are two other ways: connect the Gmail mailbox for <strong className="font-semibold">{email}</strong>, which verifies it on the spot, or have whoever runs the server run <code className="rounded bg-surface px-1 py-0.5 font-mono text-[12px]">pnpm operators verify {email}</code>.</>
           : sent ? <>We sent a new link to <strong className="font-semibold">{email}</strong>.{demo && <> Demo mode: see the <a className="font-semibold underline underline-offset-2" href="/dev/outbox">test outbox</a>.</>}</>
           : <>Confirm your email: we sent a link to <strong className="font-semibold">{email}</strong>.{demo && <> <a className="font-semibold whitespace-nowrap underline underline-offset-2" href="/dev/outbox">Open the test outbox</a>.</>}</>}
       </p>
